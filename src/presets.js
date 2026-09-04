@@ -134,4 +134,43 @@ export const PRESETS = [
       look: { renderMode: 1, opacity: 0.5, exposure: 1.15, fogDensity: 0.2 },
     },
   },
+  {
+    name: 'Boxfold weave',
+    patch: {
+      field: {
+        fieldA: 'curl', paramsA: { scale: 0.9, octaves: 2, gain: 0.5, drift: 0.15 }, domain: 1.6,
+        fractal: { mode: 1, iterations: 3, scale: 1.3, foldLimit: 1, minRadius: 0.45, fixedRadius: 1.05, offsetX: 1, offsetY: 1, offsetZ: 1, spin: 0, tumble: 11 },
+      },
+      trace: { even: true, dSepFrac: 0.035, maxCurves: 1200, seedCount: 1400, stepFrac: 0.012, maxSteps: 900, seedMode: 0, seedRadiusFrac: 0.85 },
+      geom: { geomMode: 0, width: 0.011, widthMode: 1, taperPower: 0.5, twist: 0.4, smoothIters: 1 },
+      color: { colorMode: 6, colorCycles: 1, ...grad('Copper wire') },
+      look: { renderMode: 0, ambient: 0.5, rim: 0.45, specular: 0.4, fogDensity: 0.2 },
+    },
+  },
+  {
+    name: 'Sierpinski smoke',
+    patch: {
+      field: {
+        fieldA: 'abc', paramsA: { A: 1.2, B: 0.9, C: 0.7, k: 1 }, domain: Math.PI,
+        fractal: { mode: 2, iterations: 4, scale: 1.35, offsetX: 1, offsetY: 1, offsetZ: 1, spin: 6, tumble: 0 },
+      },
+      trace: { even: true, dSepFrac: 0.03, maxCurves: 1400, seedCount: 1800, stepFrac: 0.014, maxSteps: 520, seedMode: 2, seedRadiusFrac: 0.9 },
+      geom: { geomMode: 0, width: 0.008, widthMode: 2, widthAmount: 0.7, twist: 0.3, smoothIters: 1 },
+      color: { colorMode: 3, colorCycles: 1, ...grad('Ultraviolet') },
+      look: { renderMode: 1, opacity: 0.55, exposure: 1.2, fogDensity: 0.22 },
+    },
+  },
+  {
+    name: 'Turbulent silk',
+    patch: {
+      field: {
+        fieldA: 'curl', paramsA: { scale: 0.75, octaves: 2, gain: 0.5, drift: 0.05 }, domain: 1.6,
+        fractal: { mode: 0, octaves: 3, lacunarity: 2.2, gain: 0.55, octaveSpin: 41 },
+      },
+      trace: { even: true, dSepFrac: 0.042, maxCurves: 800, seedCount: 1000, stepFrac: 0.009, maxSteps: 420, seedMode: 0 },
+      geom: { geomMode: 0, width: 0.013, widthMode: 1, taperPower: 0.45, twist: 0.8, smoothIters: 1 },
+      color: { colorMode: 0, colorCycles: 1, ...grad('Sea ice') },
+      look: { renderMode: 0, ambient: 0.6, rim: 0.4, fogDensity: 0.16 },
+    },
+  },
 ];
