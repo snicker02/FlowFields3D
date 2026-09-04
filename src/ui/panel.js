@@ -3,6 +3,7 @@
 // never re-integrates a million samples.
 
 import { FIELDS, SYMMETRIES } from '../engine/fields.js';
+import { FOLD_MODES } from '../engine/fractal.js';
 import { SEED_MODES } from '../engine/integrator.js';
 import { GEOM_MODES, WIDTH_MODES, COLOR_MODES } from '../engine/geometry.js';
 
@@ -31,6 +32,25 @@ export const SCHEMA = [
       { type: 'slider', path: 'field.drift', label: 'Global drift Z', min: -2, max: 2, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.time', label: 'Time', min: 0, max: 20, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.noiseSeed', label: 'Noise seed', min: 1, max: 9999, step: 1, level: 'trace' },
+    ],
+  },
+  {
+    title: 'Fractal', open: false, controls: [
+      { type: 'select', path: 'field.fractal.mode', label: 'Fold', options: FOLD_MODES, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.iterations', label: 'Iterations', min: 1, max: 12, step: 1, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.scale', label: 'Fold scale', min: -3, max: 3, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.foldLimit', label: 'Fold limit', min: 0.1, max: 3, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.minRadius', label: 'Inner radius', min: 0.05, max: 1.5, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.fixedRadius', label: 'Outer radius', min: 0.1, max: 2.5, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.offsetX', label: 'Offset X', min: -2, max: 2, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.offsetY', label: 'Offset Y', min: -2, max: 2, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.offsetZ', label: 'Offset Z', min: -2, max: 2, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.spin', label: 'Spin per iteration', min: -180, max: 180, step: 0.5, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.tumble', label: 'Tumble per iteration', min: -180, max: 180, step: 0.5, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.octaves', label: 'Field octaves', min: 1, max: 5, step: 1, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.lacunarity', label: 'Octave scale step', min: 1.2, max: 3.5, step: 0.01, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.gain', label: 'Octave falloff', min: 0.15, max: 0.9, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.fractal.octaveSpin', label: 'Octave twist', min: 0, max: 180, step: 0.5, level: 'trace' },
     ],
   },
   {
