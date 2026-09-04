@@ -173,4 +173,17 @@ export const PRESETS = [
       look: { renderMode: 0, ambient: 0.6, rim: 0.4, fogDensity: 0.16 },
     },
   },
+  {
+    name: 'Girder lattice',
+    patch: {
+      field: {
+        fieldA: 'abc', paramsA: { A: 1, B: 0.7071, C: 0.5774, k: 1 }, domain: Math.PI,
+        fractal: { mode: 3, iterations: 3, scale: 1.25, offsetX: 1, offsetY: 1, offsetZ: 1, spin: 0, tumble: 0 },
+      },
+      trace: { even: true, dSepFrac: 0.05, maxCurves: 700, seedCount: 900, stepFrac: 0.012, maxSteps: 520, seedMode: 2, seedRadiusFrac: 0.85 },
+      geom: { geomMode: 3, aspect: 1, width: 0.009, widthMode: 0, twist: 0, smoothIters: 1 },
+      color: { colorMode: 4, colorCycles: 1, ...grad('Graphite') },
+      look: { renderMode: 0, ambient: 0.42, rim: 0.3, specular: 0.55, shininess: 48, fogDensity: 0.18 },
+    },
+  },
 ];

@@ -63,7 +63,7 @@ export function defaultState() {
     },
 
     geom: {
-      geomMode: 0,            // 0 ribbon, 1 tube, 2 line
+      geomMode: 0,            // 0 ribbon, 1 tube, 2 line, 3 box
       width: 0.012,
       widthMode: 1,
       widthAmount: 0.6,

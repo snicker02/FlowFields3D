@@ -10,7 +10,7 @@ import * as VM from '../src/engine/vecmath.js';
 import { FIELDS, FIELD_BY_ID, defaultParams, makeEvaluator, foldPoint, SYMMETRIES } from '../src/engine/fields.js';
 import { Tracer, makeSeeds, SEED_MODES } from '../src/engine/integrator.js';
 import { SpatialHash } from '../src/engine/spatialhash.js';
-import { tangents, rmfNormals, prepareCurves, buildMesh, fitTransform, smoothCurve } from '../src/engine/geometry.js';
+import { tangents, rmfNormals, prepareCurves, buildMesh, fitTransform, smoothCurve, GEOM_MODES } from '../src/engine/geometry.js';
 import { Gradient, hexToRgb, rgbToHex, GRADIENT_PRESETS } from '../src/engine/palette.js';
 import { defaultState, mergeState, reconcileFieldParams } from '../src/state.js';
 import { PRESETS } from '../src/presets.js';
@@ -685,7 +685,7 @@ section('geometry');
   ok('fit produces a finite transform', fit.scale > 0 && fit.center.every(isFinite));
 
   const gradient = Gradient.fromPreset('Ember');
-  for (let geomMode = 0; geomMode < 3; geomMode++) {
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
     for (let colorMode = 0; colorMode < 9; colorMode++) {
       const opts = {
         h: 0.05, width: 0.02, widthMode: colorMode % 7, widthAmount: 0.5, taperPower: 0.5,
@@ -707,7 +707,7 @@ section('geometry');
       ok(`mesh mode ${geomMode} colour ${colorMode}: indices in range`, inRange);
       ok(`mesh mode ${geomMode} colour ${colorMode}: colours in [0,1]`, colorsOk);
       ok(`mesh mode ${geomMode} colour ${colorMode}: normals are unit`, normalsOk);
-      const expected = geomMode === 0 ? 2 : geomMode === 1 ? 6 : 1;
+      const expected = geomMode === 0 ? 2 : geomMode === 1 ? 6 : geomMode === 3 ? 8 : 1;
       const totalVerts = chunks.reduce((s, c) => s + c.vertexCount, 0);
       ok(`mesh mode ${geomMode}: vertex count matches form`, totalVerts === prep.totalSamples * expected,
         `${totalVerts} vs ${prep.totalSamples * expected}`);
@@ -782,7 +782,7 @@ section('state and presets');
       f.params.every((x) => x.choice || (st.field.paramsA[x.id] >= x.min && st.field.paramsA[x.id] <= x.max)));
     ok(`preset "${p.name}": gradient parses`, new Gradient(st.color.gradient).stops.length >= 2);
     ok(`preset "${p.name}": colour mode is valid`, st.color.colorMode >= 0 && st.color.colorMode < 9);
-    ok(`preset "${p.name}": geometry mode is valid`, st.geom.geomMode >= 0 && st.geom.geomMode < 3);
+    ok(`preset "${p.name}": geometry mode is valid`, st.geom.geomMode >= 0 && st.geom.geomMode < GEOM_MODES.length);
   }
 
   // switching fields must not leave stale parameters behind

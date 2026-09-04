@@ -13,7 +13,7 @@
 
 import { Noise } from './noise.js';
 
-export const GEOM_MODES = ['Ribbon', 'Tube', 'Line'];
+export const GEOM_MODES = ['Ribbon', 'Tube', 'Line', 'Box'];
 export const WIDTH_MODES = ['Constant', 'Taper', 'By speed', 'By curvature', 'Random per curve', 'Ramp', 'Noise'];
 export const COLOR_MODES = ['Along curve', 'Curve index', 'Speed', 'Curvature', 'Height (Y)', 'Depth (Z)',
   'Radius', 'Direction', 'Random per curve'];
@@ -263,7 +263,11 @@ class Chunk {
 export function buildMesh(prepared, opts) {
   const mode = opts.geomMode;
   const sides = Math.max(3, Math.min(16, opts.sides | 0));
-  const vertsPerSample = mode === 0 ? 2 : mode === 1 ? sides : 1;
+  // Box duplicates the four corners so each face carries its own flat normal.
+  // A 4-sided tube has the same silhouette but shares corner vertices, so its
+  // normals are averaged across the seam and it shades like a rounded band
+  // rather than a bar with edges.
+  const vertsPerSample = mode === 0 ? 2 : mode === 1 ? sides : mode === 3 ? 8 : 1;
   const glMode = mode === 2 ? 'lines' : 'triangles';
   const chunks = [];
   let chunk = new Chunk(glMode);
@@ -305,6 +309,21 @@ export function buildMesh(prepared, opts) {
           const nl = Math.hypot(nx, ny, nz) || 1;
           pushVert(chunk, px + ox, py + oy, pz + oz, nx / nl, ny / nl, nz / nl, rgb, s, it.rnd);
         }
+      } else if (mode === 3) {
+        const rx = w, ry = Math.max(1e-6, w * opts.aspect);
+        // Corners, then faces between consecutive corners. Each face gets both
+        // of its corners with the face normal, so the edges stay crisp.
+        const cx = [-ux * rx - wx * ry, ux * rx - wx * ry, ux * rx + wx * ry, -ux * rx + wx * ry];
+        const cy = [-uy * rx - wy * ry, uy * rx - wy * ry, uy * rx + wy * ry, -uy * rx + wy * ry];
+        const cz = [-uz * rx - wz * ry, uz * rx - wz * ry, uz * rx + wz * ry, -uz * rx + wz * ry];
+        const fnx = [-wx, ux, wx, -ux], fny = [-wy, uy, wy, -uy], fnz = [-wz, uz, wz, -uz];
+        for (let k = 0; k < 4; k++) {
+          const k2 = (k + 1) & 3;
+          const nl = Math.hypot(fnx[k], fny[k], fnz[k]) || 1;
+          const nx = fnx[k] / nl, ny = fny[k] / nl, nz = fnz[k] / nl;
+          pushVert(chunk, px + cx[k], py + cy[k], pz + cz[k], nx, ny, nz, rgb, s, it.rnd);
+          pushVert(chunk, px + cx[k2], py + cy[k2], pz + cz[k2], nx, ny, nz, rgb, s, it.rnd);
+        }
       } else {
         pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd);
       }
@@ -321,6 +340,14 @@ export function buildMesh(prepared, opts) {
         for (let k = 0; k < sides; k++) {
           const k2 = (k + 1) % sides;
           chunk.indices.push(r0 + k, r0 + k2, r1 + k, r0 + k2, r1 + k2, r1 + k);
+        }
+      }
+    } else if (mode === 3) {
+      for (let i = 0; i < n - 1; i++) {
+        const r0 = base + i * 8, r1 = base + (i + 1) * 8;
+        for (let k = 0; k < 4; k++) {
+          const a = r0 + k * 2, b = a + 1, c2 = r1 + k * 2, d = c2 + 1;
+          chunk.indices.push(a, b, c2, b, d, c2);
         }
       }
     } else {
