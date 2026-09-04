@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flow Fields 3D</title>
+<meta name="description" content="Traces streamlines through 3D vector fields and extrudes them into ribbons and tubes.">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<aside id="sidebar">
+  <header id="masthead">
+    <h1>Flow&nbsp;Fields&nbsp;3D</h1>
+    <button id="hide" class="ghost" title="Hide the panel (h)">Hide</button>
+  </header>
+
+  <div id="toolbar">
+    <div class="row">
+      <label for="preset">Start from</label>
+      <select id="preset"></select>
+    </div>
+    <div class="buttons">
+      <button id="regen" title="New random seed (r)">Retrace</button>
+      <button id="shuffle" title="Randomise a few settings (space)">Shuffle</button>
+      <button id="fit" class="ghost">Reset view</button>
+    </div>
+    <div class="buttons">
+      <button id="png" class="ghost" title="Save a PNG (p)">PNG</button>
+      <button id="svg" class="ghost" title="Projected vector paths, grouped by colour">SVG</button>
+      <button id="obj" class="ghost" title="Ribbon mesh for a 3D package">OBJ</button>
+      <button id="save" class="ghost">Save</button>
+      <label class="ghost filebutton" title="Load a saved settings file">Load
+        <input id="load" type="file" accept="application/json,.json">
+      </label>
+    </div>
+    <div id="progress"><div id="progress-bar"></div></div>
+  </div>
+
+  <div id="panel"></div>
+
+  <footer>
+    <p>Drag to orbit · shift-drag to pan · scroll to zoom</p>
+  </footer>
+</aside>
+
+<div id="status">Starting up</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

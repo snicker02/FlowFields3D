@@ -1,0 +1,13 @@
+{
+  "name": "flow-fields-3d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Traces streamlines through 3D vector fields and extrudes them into ribbons and tubes.",
+  "scripts": {
+    "serve": "python3 -m http.server 8000",
+    "test": "node tools/test.mjs",
+    "shaders": "node tools/dump-shaders.mjs && python3 tools/glsl.py",
+    "check": "bash tools/check.sh"
+  }
+}
