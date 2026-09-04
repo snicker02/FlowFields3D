@@ -19,6 +19,21 @@ export function defaultState() {
       blend: 0,
       blendMode: 0,           // 0 lerp, 1 add, 2 cross
       symmetry: 0,
+      fractal: {
+        mode: 0,              // see FOLD_MODES
+        iterations: 3,
+        scale: 1.2,
+        foldLimit: 1,
+        minRadius: 0.5,
+        fixedRadius: 1,
+        offsetX: 1, offsetY: 1, offsetZ: 1,
+        spin: 0,
+        tumble: 0,
+        octaves: 1,           // self-similar summation of the field itself
+        lacunarity: 2,
+        gain: 0.5,
+        octaveSpin: 37,
+      },
       warp: 0,
       warpScale: 1.2,
       swirl: 0,
