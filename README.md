@@ -73,6 +73,42 @@ Ten symmetry modes fold the domain — mirror, octant, octahedral, tetrahedral,
 map the velocity back through its transpose, so a folded field is genuinely
 equivariant rather than just mirrored-looking.
 
+## Fractalize
+
+Two different senses of the word, on separate controls, usable together.
+
+**Fold** applies an iterated map to the sample point before the field is read:
+Amazing Box, Sierpinski, Menger cross, kaleidoscopic IFS, or an Apollonian
+lattice-and-inversion. Every operation used is a *similarity* — reflection,
+rotation, uniform scale, sphere inversion — so the Jacobian of the whole fold is
+a scaled orthogonal matrix, and the velocity pulls back exactly as `Mᵀv`. That
+matters: it means a streamline traced in world space is the exact preimage of a
+streamline of the unfolded field, rather than something that merely looks
+folded. The tests check this directly, by stepping the world point along `Mᵀu`
+and confirming the folded point moves along `u` (worst case 1 − cos ≈ 3e-10).
+
+Every fold is also continuous — box folds reflect at the plane they test, sphere
+folds match from both sides — so streamlines bend at fold surfaces but never
+jump. The fixed iteration count is what buys that; escape-time iteration would
+tear the field along the escape boundary.
+
+One deliberate deviation: a true Mandelbox adds the *original* point each
+iteration, which makes the Jacobian `s·J + I` — not a similarity, and the clean
+pullback is lost. This uses a constant offset instead, the Amazing Box form.
+
+Raising iterations or fold scale puts the structure at `scale^iterations` of its
+usual size, so the step size is divided by the same factor automatically
+(capped at 16×). Without that, turning up "iterations" makes the picture worse
+rather than finer — the tracer strides straight past the detail it just created.
+Expect shorter streamlines from the fold presets: folding brings distant curves
+into the same neighbourhood, so the even-spacing test retires them sooner.
+
+**Octaves** sums the field over self-similar scales instead,
+`v(p) = Σ aⁱ Rᵢᵀ f(bⁱ Rᵢ p)`. Each term is a rotated, scaled pullback, so a
+divergence-free field stays divergence free — verified against ABC flow, whose
+divergence is analytically zero. It costs one field evaluation per octave, which
+on curl noise is the most expensive thing in the app.
+
 ## Controls
 
 Drag to orbit, wheel to zoom, shift-drag or right-drag to pan, pinch on touch.
@@ -84,8 +120,8 @@ Drag to orbit, wheel to zoom, shift-drag or right-drag to pan, pinch on touch.
 | `H` | hide the panel |
 | `P` | save a PNG |
 
-The panel is grouped as Field, Second field, Streamlines, Ribbons, Colour,
-Light and air, Motion and camera. Ribbons offer 7 width modes and 9 colour
+The panel is grouped as Field, Fractal, Second field, Streamlines, Ribbons,
+Colour, Light and air, Motion and camera. Ribbons offer 7 width modes and 9 colour
 modes (along the curve, per curve, speed, curvature, height, depth, radius,
 direction, random), driven by a gradient you can edit — drag stops, click to
 add, double-click to remove, or start from one of 10 presets.
@@ -120,7 +156,8 @@ Three gates:
 
 1. every source file parses, including the DOM-only ones
 2. `tools/test.mjs` — 2400+ assertions with no browser: divergence of the curl
-   noise, RK4 convergence order, equivariance of the symmetry folds,
+   noise, RK4 convergence order, equivariance of the symmetry and fractal
+   folds,
    orthonormality of the frames, spatial hash against brute force, index bounds
    and chunking for every geometry × colour mode, SVG well-formedness, and every
    preset run end to end through the real pipeline

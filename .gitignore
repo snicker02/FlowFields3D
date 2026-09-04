@@ -1,0 +1,4 @@
+node_modules/
+tools/__pycache__/
+tools/shaders.json
+.DS_Store
