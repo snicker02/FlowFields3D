@@ -14,7 +14,8 @@ import { tangents, rmfNormals, prepareCurves, buildMesh, fitTransform, smoothCur
 import { Gradient, hexToRgb, rgbToHex, GRADIENT_PRESETS } from '../src/engine/palette.js';
 import { defaultState, mergeState, reconcileFieldParams } from '../src/state.js';
 import { PRESETS } from '../src/presets.js';
-import { chunksToOBJ, preparedToSVG } from '../src/io/exporters.js';
+import { fractalFold, identity3, foldStepScale, octaveRotations, FOLD_MODES } from '../src/engine/fractal.js';
+import { chunksToOBJ, preparedToSVG, EXPORT_SIZES, resolveExportSize } from '../src/io/exporters.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
 
 let pass = 0, fail = 0;
@@ -204,6 +205,267 @@ section('symmetry');
     }
   }
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------- tiled export
+section('tiled export');
+{
+  // A tile must be an exact window onto the full frustum. If this drifts, a big
+  // PNG comes out with visible seams or doubled geometry at the tile edges.
+  const fov = 42 * Math.PI / 180, aspect = 16 / 9, near = 0.01, far = 60;
+  const full = VM.mat4Perspective(fov, aspect, near, far);
+  const tiles = [[0, 0.5, 0, 0.5], [0.5, 1, 0, 0.5], [0, 0.5, 0.5, 1], [0.5, 1, 0.5, 1],
+    [0.25, 0.4, 0.6, 0.85], [0, 1, 0, 1]];
+
+  let worst = 0, tested = 0;
+  for (const t of tiles) {
+    const sub = VM.mat4PerspectiveTile(fov, aspect, near, far, t[0], t[1], t[2], t[3]);
+    for (let i = 0; i < 200; i++) {
+      const p = [
+        (mulberry32(i + 2)() * 2 - 1) * 2,
+        (mulberry32(i + 22)() * 2 - 1) * 2,
+        -(0.5 + mulberry32(i + 222)() * 6),
+      ];
+      const ah = VM.mat4TransformPoint(full, p);
+      const bh = VM.mat4TransformPoint(sub, p);
+      if (ah[3] <= 1e-6 || bh[3] <= 1e-6) continue;          // behind the eye
+      const a = [ah[0] / ah[3], ah[1] / ah[3], ah[2] / ah[3]];
+      const b = [bh[0] / bh[3], bh[1] / bh[3], bh[2] / bh[3]];
+      // NDC to image UV under the full projection, then into the tile's frame.
+      const u = (a[0] + 1) / 2, v = (a[1] + 1) / 2;
+      const eu = ((u - t[0]) / (t[1] - t[0])) * 2 - 1;
+      const ev = ((v - t[2]) / (t[3] - t[2])) * 2 - 1;
+      if (!isFinite(eu) || !isFinite(ev)) continue;
+      worst = Math.max(worst, Math.abs(b[0] - eu), Math.abs(b[1] - ev));
+      // Depth must be untouched, or tiles would z-fight differently.
+      worst = Math.max(worst, Math.abs(b[2] - a[2]));
+      tested++;
+    }
+  }
+  ok('tiles are exact windows onto the full frustum', worst < 1e-5, `worst ${worst.toExponential(2)} over ${tested} points`);
+
+  const whole = VM.mat4PerspectiveTile(fov, aspect, near, far, 0, 1, 0, 1);
+  let same = 0;
+  for (let i = 0; i < 16; i++) same = Math.max(same, Math.abs(whole[i] - full[i]));
+  ok('the whole-image tile is the plain projection', same < 1e-6, `worst ${same.toExponential(2)}`);
+
+  // Tiles must cover the image exactly once — the walk main.js does.
+  for (const [W, H, tileT] of [[3840, 2160, 512], [7680, 4320, 1024], [1000, 1000, 333], [200, 100, 512]]) {
+    const cols = Math.ceil(W / tileT), rows = Math.ceil(H / tileT);
+    let area = 0, overflow = false;
+    for (let ty = 0; ty < rows; ty++) {
+      for (let tx = 0; tx < cols; tx++) {
+        const x = tx * tileT, y = ty * tileT;
+        const tw = Math.min(tileT, W - x), th = Math.min(tileT, H - y);
+        if (tw <= 0 || th <= 0 || x + tw > W || y + th > H) overflow = true;
+        area += tw * th;
+      }
+    }
+    ok(`tiles cover ${W}x${H} exactly once`, area === W * H && !overflow, `covered ${area} of ${W * H}`);
+  }
+
+  // Size table
+  ok('every export size resolves', EXPORT_SIZES.every((_, i) => {
+    const r = resolveExportSize({ exportSize: i, exportWidth: 6000, exportHeight: 4000 }, 1600, 900);
+    return r.w >= 16 && r.h >= 16 && isFinite(r.w) && isFinite(r.h);
+  }));
+  {
+    const r = resolveExportSize({ exportSize: 0, exportWidth: 1, exportHeight: 1 }, 1600, 900);
+    ok('"Screen" is the viewport', r.w === 1600 && r.h === 900, `${r.w}x${r.h}`);
+  }
+  {
+    const r = resolveExportSize({ exportSize: 2, exportWidth: 1, exportHeight: 1 }, 1600, 900);
+    ok('"4x screen" multiplies the viewport', r.w === 6400 && r.h === 3600, `${r.w}x${r.h}`);
+  }
+  {
+    const i = EXPORT_SIZES.findIndex((e) => e.custom);
+    const r = resolveExportSize({ exportSize: i, exportWidth: 9000, exportHeight: 5000 }, 1600, 900);
+    ok('"Custom" uses the custom size', r.w === 9000 && r.h === 5000, `${r.w}x${r.h}`);
+  }
+  {
+    const r = resolveExportSize({ exportSize: 999, exportWidth: 1, exportHeight: 1 }, 800, 600);
+    ok('an unknown size falls back to the screen', r.w === 800 && r.h === 600, `${r.w}x${r.h}`);
+  }
+  ok('sizes stay inside the browser canvas limit',
+    EXPORT_SIZES.every((e) => !e.w || e.w * e.h <= 300e6));
+}
+
+// ---------------------------------------------------------------- fractal
+section('fractal');
+{
+  const M = new Float64Array(9);
+  const base = {
+    iterations: 4, scale: 1.3, foldLimit: 1, minRadius: 0.5, fixedRadius: 1,
+    offsetX: 1, offsetY: 1, offsetZ: 1, spin: 13, tumble: 7,
+  };
+  const doFold = (cfg, q) => {
+    const p = q.slice();
+    identity3(M);
+    fractalFold(cfg, p, M);
+    return { p, M: Float64Array.from(M) };
+  };
+
+  for (let mode = 1; mode < FOLD_MODES.length; mode++) {
+    const cfg = { ...base, mode };
+    const label = FOLD_MODES[mode];
+    let orth = 0, jac = 0, equiv = 0, det = 0, moved = 0;
+
+    for (let i = 0; i < 300; i++) {
+      const q = [
+        (mulberry32(i + 1)() * 2 - 1) * 1.6,
+        (mulberry32(i + 55)() * 2 - 1) * 1.6,
+        (mulberry32(i + 900)() * 2 - 1) * 1.6,
+      ];
+      const { p, M: A } = doFold(cfg, q);
+      if (!isFinite(p[0]) || !isFinite(p[1]) || !isFinite(p[2])) { moved = NaN; break; }
+      moved = Math.max(moved, Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]));
+
+      // The accumulated Jacobian must be orthogonal, or the velocity pullback
+      // shears the streamlines instead of folding them.
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          let d = 0;
+          for (let k = 0; k < 3; k++) d += A[r * 3 + k] * A[c * 3 + k];
+          orth = Math.max(orth, Math.abs(d - (r === c ? 1 : 0)));
+        }
+      }
+      const d3 = A[0] * (A[4] * A[8] - A[5] * A[7])
+        - A[1] * (A[3] * A[8] - A[5] * A[6])
+        + A[2] * (A[3] * A[7] - A[4] * A[6]);
+      det = Math.max(det, Math.abs(Math.abs(d3) - 1));
+
+      // Continuity: a fold that tore would show an unbounded local Jacobian.
+      const e = 1e-6;
+      const { p: p2 } = doFold(cfg, [q[0] + e, q[1], q[2]]);
+      jac = Math.max(jac, Math.hypot(p2[0] - p[0], p2[1] - p[1], p2[2] - p[2]) / e);
+
+      // Equivariance, the property the whole thing rests on: stepping the world
+      // point along M^T u must move the folded point along u. If this holds, a
+      // streamline traced in world space is exactly the preimage of a
+      // streamline of the unfolded field.
+      const u = [0.3, -0.5, 0.81], ul = Math.hypot(u[0], u[1], u[2]);
+      const w = [
+        A[0] * u[0] + A[3] * u[1] + A[6] * u[2],
+        A[1] * u[0] + A[4] * u[1] + A[7] * u[2],
+        A[2] * u[0] + A[5] * u[1] + A[8] * u[2],
+      ];
+      const h = 1e-7;
+      const { p: p3 } = doFold(cfg, [q[0] + h * w[0], q[1] + h * w[1], q[2] + h * w[2]]);
+      const dx = p3[0] - p[0], dy = p3[1] - p[1], dz = p3[2] - p[2];
+      const dl = Math.hypot(dx, dy, dz);
+      if (dl > 1e-14) equiv = Math.max(equiv, 1 - (dx * u[0] + dy * u[1] + dz * u[2]) / (dl * ul));
+    }
+
+    ok(`${label}: stays finite`, isFinite(moved) && moved > 1e-6, `max displacement ${moved}`);
+    ok(`${label}: Jacobian is orthogonal`, orth < 1e-9, `worst ${orth.toExponential(2)}`);
+    ok(`${label}: determinant is +/-1`, det < 1e-9, `worst ${det.toExponential(2)}`);
+    ok(`${label}: fold is continuous`, jac < 1e5, `local Jacobian ${jac.toExponential(2)}`);
+    ok(`${label}: velocity pullback is exact`, equiv < 1e-6, `worst 1-cos ${equiv.toExponential(2)}`);
+  }
+
+  // Mode 0 must be a no-op, matrix included.
+  {
+    const { p, M: A } = doFold({ ...base, mode: 0 }, [0.3, -0.7, 1.1]);
+    ok('fold "None" leaves the point alone', p[0] === 0.3 && p[1] === -0.7 && p[2] === 1.1);
+    ok('fold "None" leaves the matrix at identity', A[0] === 1 && A[4] === 1 && A[8] === 1 && A[1] === 0);
+  }
+
+  // Determinism: the same point must fold the same way every time, or the
+  // tracer would get a different field on the second pass of a curve.
+  {
+    const cfg = { ...base, mode: 1 };
+    const a = doFold(cfg, [0.4, 0.2, -0.9]);
+    const b = doFold(cfg, [0.4, 0.2, -0.9]);
+    ok('folding is deterministic', a.p.every((v, i) => v === b.p[i]) && a.M.every((v, i) => v === b.M[i]));
+  }
+
+  // Step compensation
+  ok('step scale is 1 when folding is off', foldStepScale({ mode: 0, scale: 2, iterations: 6 }) === 1);
+  ok('step scale grows with iterations',
+    foldStepScale({ mode: 1, scale: 1.5, iterations: 3 }) > foldStepScale({ mode: 1, scale: 1.5, iterations: 2 }));
+  ok('step scale is capped', foldStepScale({ mode: 1, scale: 3, iterations: 12 }) <= 16);
+  ok('step scale ignores a shrinking fold', foldStepScale({ mode: 1, scale: 0.8, iterations: 5 }) === 1);
+
+  // Octave rotations must be genuine rotations, or the summed field would be
+  // sheared rather than rotated and the divergence-free property would go.
+  {
+    const rots = octaveRotations(4, 41);
+    let worst = 0;
+    for (const R of rots) {
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          let d = 0;
+          for (let k = 0; k < 3; k++) d += R[r * 3 + k] * R[c * 3 + k];
+          worst = Math.max(worst, Math.abs(d - (r === c ? 1 : 0)));
+        }
+      }
+    }
+    ok('octave rotations are orthogonal', worst < 1e-12, `worst ${worst.toExponential(2)}`);
+    ok('the first octave is unrotated', rots[0][0] === 1 && rots[0][4] === 1 && rots[0][8] === 1);
+  }
+
+  // One octave must reproduce the plain field exactly.
+  {
+    const st = defaultState();
+    const cfgFor = (fractal) => ({
+      fieldA: st.field.fieldA, paramsA: st.field.paramsA, fieldB: st.field.fieldB, paramsB: st.field.paramsB,
+      blend: 0, blendMode: 0, symmetry: 0, fractal, warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: st.field.domain,
+    });
+    const plain = makeEvaluator(cfgFor({ mode: 0, octaves: 1 }), { noise: new Noise(1337), noiseB: new Noise(7), time: 0 });
+    const one = makeEvaluator(cfgFor({ mode: 0, octaves: 1, lacunarity: 2, gain: 0.5, octaveSpin: 37 }),
+      { noise: new Noise(1337), noiseB: new Noise(7), time: 0 });
+    const a = [0, 0, 0], b = [0, 0, 0];
+    let worst = 0;
+    for (let i = 0; i < 50; i++) {
+      const x = (mulberry32(i + 3)() * 2 - 1), y = (mulberry32(i + 33)() * 2 - 1), z = (mulberry32(i + 333)() * 2 - 1);
+      plain(x, y, z, a); one(x, y, z, b);
+      worst = Math.max(worst, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+    }
+    ok('one octave is the plain field', worst < 1e-12, `worst ${worst.toExponential(2)}`);
+  }
+
+  // The summed field must stay divergence free when the base field is. This is
+  // the whole reason each octave is a rotated pullback rather than a plain
+  // rotation of the output: div(a R^T f(b R p)) = ab * (div f)(bRp).
+  //
+  // ABC flow is used rather than curl noise because its divergence is
+  // analytically zero, so anything left over is the summation's fault. Curl
+  // noise carries its own small finite-difference residual, and the higher
+  // octaves would amplify that by the square of their frequency and drown the
+  // property being tested.
+  {
+    const st = defaultState();
+    const ev = makeEvaluator({
+      fieldA: 'abc', paramsA: defaultParams(FIELD_BY_ID.abc), fieldB: 'shear', paramsB: defaultParams(FIELD_BY_ID.shear),
+      blend: 0, blendMode: 0, symmetry: 0,
+      fractal: { mode: 0, octaves: 4, lacunarity: 2, gain: 0.5, octaveSpin: 41 },
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: st.field.domain,
+    }, { noise: new Noise(1337), noiseB: new Noise(7), time: 0 });
+    const o1 = [0, 0, 0], o2 = [0, 0, 0], o3 = [0, 0, 0];
+    let meanDiv = 0, meanMag = 0, n = 0;
+    const k = 0.01;
+    for (let i = 0; i < 200; i++) {
+      const q = [
+        (mulberry32(i + 5)() * 2 - 1) * 1.2,
+        (mulberry32(i + 50)() * 2 - 1) * 1.2,
+        (mulberry32(i + 500)() * 2 - 1) * 1.2,
+      ];
+      let div = 0;
+      for (let d = 0; d < 3; d++) {
+        const a = q.slice(), b = q.slice();
+        a[d] += k; b[d] -= k;
+        ev(a[0], a[1], a[2], o1); ev(b[0], b[1], b[2], o2);
+        div += (o1[d] - o2[d]) / (2 * k);
+      }
+      ev(q[0], q[1], q[2], o3);
+      meanMag += Math.hypot(o3[0], o3[1], o3[2]);
+      meanDiv += Math.abs(div);
+      n++;
+    }
+    meanDiv /= n; meanMag /= n;
+    ok('summed octaves stay divergence free', meanDiv < 0.01 * meanMag,
+      `mean |div| ${meanDiv.toFixed(4)} vs mean |v| ${meanMag.toFixed(4)}`);
+  }
 }
 
 // ---------------------------------------------------------------- integrator
@@ -631,12 +893,14 @@ section('presets end to end');
       fieldA: st.field.fieldA, paramsA: st.field.paramsA,
       fieldB: st.field.fieldB, paramsB: st.field.paramsB,
       blend: st.field.blend, blendMode: st.field.blendMode, symmetry: st.field.symmetry,
+      fractal: st.field.fractal,
       warp: st.field.warp, warpScale: st.field.warpScale, swirl: st.field.swirl,
       drift: st.field.drift, domain: st.field.domain,
     }, { noise, noiseB: new Noise(7), time: st.field.time });
 
     const cfg = {
       ...st.trace, domain: st.field.domain,
+      stepFrac: st.trace.stepFrac / foldStepScale(st.field.fractal),
       maxCurves: Math.min(st.trace.maxCurves, 60),
       seedCount: Math.min(st.trace.seedCount, 120),
       maxSteps: Math.min(st.trace.maxSteps, 240),

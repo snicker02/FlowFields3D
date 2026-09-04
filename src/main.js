@@ -19,7 +19,7 @@ import { defaultState, mergeState, reconcileFieldParams } from './state.js';
 import { PRESETS } from './presets.js';
 import { Panel } from './ui/panel.js';
 import { GradientEditor } from './ui/gradient.js';
-import { downloadBlob, stamp, chunksToOBJ, preparedToSVG, stateToJSON, parseStateJSON } from './io/exporters.js';
+import { downloadBlob, stamp, chunksToOBJ, preparedToSVG, stateToJSON, parseStateJSON, resolveExportSize } from './io/exporters.js';
 
 const BUILD = '0.1.0';
 
@@ -181,6 +181,10 @@ function loop(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0);
   lastT = t;
 
+  // A tiled export owns the canvas until it finishes; drawing the live view
+  // underneath it would resize the buffer out from under the tile being read.
+  if (app.exporting) { requestAnimationFrame(loop); return; }
+
   if (app.tracer) {
     const done = app.tracer.runSlice(14);
     progressBar.style.width = (app.tracer.progress * 100).toFixed(1) + '%';
@@ -228,6 +232,11 @@ function syncCameraFromState() {
 }
 
 function setStatus(text) { statusEl.textContent = text; }
+
+function setProgress(frac) {
+  progressBar.style.width = (Math.max(0, Math.min(1, frac)) * 100).toFixed(1) + '%';
+  progressEl.classList.toggle('busy', frac > 0);
+}
 
 // ---------------------------------------------------------------- toolbar
 
@@ -352,20 +361,101 @@ function onKey(e) {
 
 // ---------------------------------------------------------------- exports
 
-function savePNG() {
-  const scale = Math.max(1, Math.round(app.state.look.supersample));
-  const { w, h } = viewportSize();
-  const W = w * scale, H = h * scale;
-  app.renderer.resize(W, H);
-  app.camera.update(W / H);
-  app.renderer.renderScene(
-    { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat },
-    app.state.look, W, H,
-  );
-  canvas.toBlob((blob) => {
-    if (blob) downloadBlob(blob, `flowfield-${stamp()}.png`);
+/**
+ * Render a PNG at an arbitrary size by drawing it in tiles.
+ *
+ * A single huge drawing buffer is the obvious approach and the wrong one: a
+ * 12K frame is 75 megapixels before supersampling, past what a WebGL context
+ * will hand out on most machines and all of it resident at once. Instead the
+ * canvas stays small and walks the image, each tile rendered through its own
+ * slice of the *same* frustum, composited into a 2D canvas as it goes. The
+ * camera never moves, so the tiles line up exactly.
+ */
+async function savePNG() {
+  if (app.exporting) return;
+  const s = app.state;
+  const view = viewportSize();
+  const { w: W, h: H, label } = resolveExportSize(s.look, view.w, view.h);
+  const ss = Math.max(1, Math.min(4, Math.round(s.look.supersample)));
+
+  // Browsers refuse to allocate a canvas past roughly this area, and the ones
+  // that do not refuse tend to return a blank image instead, which is worse.
+  const MAX_PIXELS = 300e6;
+  if (W * H > MAX_PIXELS) {
+    setStatus(`${W} x ${H} is ${(W * H / 1e6).toFixed(0)} megapixels — past what a browser canvas will hold. Try a smaller size.`);
+    return;
+  }
+
+  let out, ctx2d;
+  try {
+    out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    ctx2d = out.getContext('2d');
+    if (!ctx2d) throw new Error('no 2D context');
+  } catch (e) {
+    setStatus(`Could not allocate a ${W} x ${H} image: ${e.message}`);
+    return;
+  }
+
+  const gl = app.renderer.gl;
+  const maxDim = Math.min(2048, gl.getParameter(gl.MAX_VIEWPORT_DIMS)[0] || 2048);
+  const tileT = Math.max(64, Math.floor(maxDim / ss));   // tile size in output pixels
+  const cols = Math.ceil(W / tileT), rows = Math.ceil(H / tileT);
+  const total = cols * rows;
+
+  app.exporting = true;
+  const restore = () => {
+    app.exporting = false;
+    const v = viewportSize();
+    app.renderer.resize(v.w, v.h);
+    app.camera.update(v.w / v.h);
     app.dirtyDraw = true;
-  }, 'image/png');
+  };
+
+  try {
+    let done = 0;
+    for (let ty = 0; ty < rows; ty++) {
+      for (let tx = 0; tx < cols; tx++) {
+        const x = tx * tileT, y = ty * tileT;
+        const tw = Math.min(tileT, W - x), th = Math.min(tileT, H - y);
+        const pw = tw * ss, ph = th * ss;
+
+        // Image rows run downwards, the frustum runs upwards.
+        const rect = [x / W, (x + tw) / W, 1 - (y + th) / H, 1 - y / H];
+
+        app.renderer.resize(pw, ph);
+        app.camera.update(W / H, rect);
+        app.renderer.renderScene(
+          { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat },
+          s.look, pw, ph,
+          [rect[0], rect[2], rect[1] - rect[0], rect[3] - rect[2]],
+        );
+        ctx2d.drawImage(canvas, 0, 0, pw, ph, x, y, tw, th);
+
+        done++;
+        if (total > 1) {
+          setProgress(done / total);
+          setStatus(`Rendering ${W} x ${H}${ss > 1 ? ` at ${ss}x` : ''} — tile ${done} of ${total}`);
+          await new Promise((r) => requestAnimationFrame(r));   // let the bar move
+        }
+      }
+    }
+
+    setProgress(0);
+    setStatus(`Encoding ${W} x ${H}...`);
+    const blob = await new Promise((r) => out.toBlob(r, 'image/png'));
+    if (blob) {
+      downloadBlob(blob, `flowfield-${stamp()}.png`);
+      setStatus(`Saved ${W} x ${H} (${label}${ss > 1 ? `, ${ss}x supersampled` : ''}) — ${(blob.size / 1048576).toFixed(1)} MB`);
+    } else {
+      setStatus(`The browser would not encode a ${W} x ${H} PNG. Try a smaller size or a lower supersample.`);
+    }
+  } catch (e) {
+    setStatus(`Export failed: ${e.message}`);
+  } finally {
+    setProgress(0);
+    restore();
+  }
 }
 
 function saveSVG() {

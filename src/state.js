@@ -108,6 +108,9 @@ export function defaultState() {
       renderMode: 0,          // 0 shaded, 1 additive, 2 flat
       cull: false,
       autoRotate: 0,
+      exportSize: 1,          // index into EXPORT_SIZES
+      exportWidth: 6000,
+      exportHeight: 4000,
       supersample: 2,
     },
 

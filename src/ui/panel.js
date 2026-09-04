@@ -4,6 +4,7 @@
 
 import { FIELDS, SYMMETRIES } from '../engine/fields.js';
 import { FOLD_MODES } from '../engine/fractal.js';
+import { EXPORT_SIZES } from '../io/exporters.js';
 import { SEED_MODES } from '../engine/integrator.js';
 import { GEOM_MODES, WIDTH_MODES, COLOR_MODES } from '../engine/geometry.js';
 
@@ -128,13 +129,20 @@ export const SCHEMA = [
     ],
   },
   {
+    title: 'Export', open: false, controls: [
+      { type: 'select', path: 'look.exportSize', label: 'PNG size', options: EXPORT_SIZES.map((e) => e.label), level: 'none' },
+      { type: 'slider', path: 'look.exportWidth', label: 'Custom width', min: 256, max: 20000, step: 16, level: 'none' },
+      { type: 'slider', path: 'look.exportHeight', label: 'Custom height', min: 256, max: 20000, step: 16, level: 'none' },
+      { type: 'slider', path: 'look.supersample', label: 'Supersample', min: 1, max: 4, step: 1, level: 'none' },
+    ],
+  },
+  {
     title: 'Motion and camera', open: false, controls: [
       { type: 'slider', path: 'look.flowStrength', label: 'Flow pulse', min: 0, max: 1, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'look.flowFreq', label: 'Pulse repeats', min: 0.2, max: 20, step: 0.1, level: 'draw' },
       { type: 'slider', path: 'look.flowSpeed', label: 'Pulse speed', min: -3, max: 3, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'look.autoRotate', label: 'Auto-rotate', min: -1, max: 1, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'camera.fov', label: 'Field of view', min: 12, max: 100, step: 1, level: 'draw' },
-      { type: 'slider', path: 'look.supersample', label: 'PNG supersample', min: 1, max: 4, step: 1, level: 'none' },
     ],
   },
 ];

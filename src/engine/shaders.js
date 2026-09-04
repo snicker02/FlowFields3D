@@ -96,8 +96,13 @@ export const BG_VS = `
 precision highp float;
 attribute vec2 aXY;
 varying vec2 vUV;
+// Which part of the finished image this draw covers: xy = offset, zw = size.
+// (0,0,1,1) for the live view; a sub-rectangle when a big export is being
+// rendered in tiles, so the gradient and vignette span the whole picture
+// instead of restarting in every tile.
+uniform vec4 uUVRect;
 void main() {
-  vUV = aXY * 0.5 + 0.5;
+  vUV = (aXY * 0.5 + 0.5) * uUVRect.zw + uUVRect.xy;
   gl_Position = vec4(aXY, 0.999, 1.0);
 }
 `;

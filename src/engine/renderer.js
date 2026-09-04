@@ -52,7 +52,7 @@ export class Renderer {
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
-    this.bgUni = uniforms(gl, this.bgProg, ['uTop', 'uBottom', 'uVignette']);
+    this.bgUni = uniforms(gl, this.bgProg, ['uTop', 'uBottom', 'uVignette', 'uUVRect']);
     this.bgBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.bgBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -102,8 +102,10 @@ export class Renderer {
    * The single draw entry point.
    * look: { mvp, modelView, normalMat }
    * style: see state.js `look` block.
+   * uvRect: optional [x, y, w, h] in 0..1 naming which part of the finished
+   *   image this pass covers, so a tiled export gets one continuous background.
    */
-  renderScene(look, style, width, height) {
+  renderScene(look, style, width, height, uvRect) {
     const gl = this.gl;
     gl.viewport(0, 0, width, height);
     gl.disable(gl.BLEND);
@@ -120,6 +122,8 @@ export class Renderer {
     gl.uniform3fv(this.bgUni.uTop, hexToRgb(style.bgTop));
     gl.uniform3fv(this.bgUni.uBottom, hexToRgb(style.bgBottom));
     gl.uniform1f(this.bgUni.uVignette, style.vignette);
+    if (uvRect) gl.uniform4f(this.bgUni.uUVRect, uvRect[0], uvRect[1], uvRect[2], uvRect[3]);
+    else gl.uniform4f(this.bgUni.uUVRect, 0, 0, 1, 1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.bgAttr);
 

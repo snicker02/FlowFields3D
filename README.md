@@ -137,7 +137,16 @@ it costs nothing per frame and never re-traces.
 
 ## Export
 
-- **PNG** — supersampled, through the same render path as the screen
+- **PNG** — at any size up to 300 megapixels, through the same render path as
+  the screen. Sizes include 4K through 12K, square 4096/8192, A3, A2 and
+  16 x 20in at 300 dpi, plus a custom width and height. Anything larger than one
+  tile is rendered in pieces and composited, because a 12K frame is 75
+  megapixels before supersampling and no WebGL context will hand that over in
+  one buffer. Each tile is drawn through its own slice of the *same* frustum, so
+  the camera never moves between them and the seams are exact. The background
+  gradient and vignette are told which part of the picture they are covering, or
+  they would restart in every tile. Supersampling (1-4x) is applied on top and
+  resolved per tile.
 - **SVG** — projected vector output with painter ordering, perspective stroke
   width, depth fade, and colour-quantised pen layers carrying `inkscape:label`
 - **OBJ** — the extruded mesh
@@ -173,6 +182,10 @@ Trace times on a slow headless CPU, at full preset budgets: most land between
 O(curves × samples × segments). Geometry rebuilds are 0.1–0.9 s. If you push the
 curve count and step count up, the numbers scale about linearly; the progress
 bar will tell you what you have asked for.
+
+Big exports are the other place to be careful: 12K at 4x supersample renders
+1.2 billion pixels of geometry and takes a while, with a progress bar per tile.
+The status line reports the finished file size.
 
 Memory is the other budget. A tube at 6 sides costs six vertices per sample, and
 vertices carry position, normal, colour and parameters. Around 3 million

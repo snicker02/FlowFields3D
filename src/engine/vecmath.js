@@ -64,6 +64,28 @@ export function mat4Perspective(fovyRad, aspect, near, far, o = new Float32Array
   return o;
 }
 
+/**
+ * The same perspective frustum restricted to a sub-rectangle of the image,
+ * given in 0..1 with y up. Rendering each tile through its own slice of the one
+ * frustum is what makes tiled export seamless: the tiles are not separate
+ * cameras, they are windows onto the same one.
+ */
+export function mat4PerspectiveTile(fovyRad, aspect, near, far, x0, x1, y0, y1, o = new Float32Array(16)) {
+  const t = near * Math.tan(fovyRad / 2), b = -t;
+  const r = t * aspect, l = -r;
+  const l2 = l + (r - l) * x0, r2 = l + (r - l) * x1;
+  const b2 = b + (t - b) * y0, t2 = b + (t - b) * y1;
+  o.fill(0);
+  o[0] = (2 * near) / (r2 - l2);
+  o[5] = (2 * near) / (t2 - b2);
+  o[8] = (r2 + l2) / (r2 - l2);
+  o[9] = (t2 + b2) / (t2 - b2);
+  o[10] = (far + near) / (near - far);
+  o[11] = -1;
+  o[14] = (2 * far * near) / (near - far);
+  return o;
+}
+
 export function mat4LookAt(eye, target, up, o = new Float32Array(16)) {
   const z = normalize(sub(eye, target));
   let x = cross(up, z);

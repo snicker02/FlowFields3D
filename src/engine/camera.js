@@ -1,6 +1,6 @@
 // camera.js — orbit camera with pointer, wheel and touch control.
 
-import { mat4LookAt, mat4Perspective, mat4Multiply, mat3FromMat4 } from './vecmath.js';
+import { mat4LookAt, mat4Perspective, mat4PerspectiveTile, mat4Multiply, mat3FromMat4 } from './vecmath.js';
 
 export class OrbitCamera {
   constructor() {
@@ -19,12 +19,21 @@ export class OrbitCamera {
     this.eye = [0, 0, 0];
   }
 
-  update(aspect) {
+  /**
+   * `tile`, when given, is [x0, x1, y0, y1] in 0..1 with y up — the slice of
+   * the image being rendered. `aspect` stays the aspect of the whole image.
+   */
+  update(aspect, tile) {
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     this.eye[0] = this.target[0] + this.dist * cp * Math.sin(this.yaw);
     this.eye[1] = this.target[1] + this.dist * sp;
     this.eye[2] = this.target[2] + this.dist * cp * Math.cos(this.yaw);
-    mat4Perspective((this.fov * Math.PI) / 180, aspect, this.near, this.far, this.proj);
+    if (tile) {
+      mat4PerspectiveTile((this.fov * Math.PI) / 180, aspect, this.near, this.far,
+        tile[0], tile[1], tile[2], tile[3], this.proj);
+    } else {
+      mat4Perspective((this.fov * Math.PI) / 180, aspect, this.near, this.far, this.proj);
+    }
     mat4LookAt(this.eye, this.target, this.up, this.view);
     mat4Multiply(this.proj, this.view, this.mvp);
     mat3FromMat4(this.view, this.normalMat);

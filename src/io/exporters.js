@@ -7,6 +7,36 @@
 import { mat4TransformPoint } from '../engine/vecmath.js';
 import { rgbToHex } from '../engine/palette.js';
 
+/**
+ * Export sizes. `mul` multiplies the current viewport; `w`/`h` are absolute.
+ * Print sizes are the pixel counts for 300 dpi, which is what a lab wants.
+ */
+export const EXPORT_SIZES = [
+  { label: 'Screen', mul: 1 },
+  { label: '2x screen', mul: 2 },
+  { label: '4x screen', mul: 4 },
+  { label: '4K  3840 x 2160', w: 3840, h: 2160 },
+  { label: '6K  6144 x 3456', w: 6144, h: 3456 },
+  { label: '8K  7680 x 4320', w: 7680, h: 4320 },
+  { label: '12K  11520 x 6480', w: 11520, h: 6480 },
+  { label: 'Square 4096', w: 4096, h: 4096 },
+  { label: 'Square 8192', w: 8192, h: 8192 },
+  { label: 'A3 at 300dpi  4961 x 3508', w: 4961, h: 3508 },
+  { label: 'A2 at 300dpi  7016 x 4961', w: 7016, h: 4961 },
+  { label: '16 x 20in at 300dpi  4800 x 6000', w: 4800, h: 6000 },
+  { label: 'Custom', custom: true },
+];
+
+/** Resolve a size choice against the current viewport. */
+export function resolveExportSize(state, viewW, viewH) {
+  const entry = EXPORT_SIZES[state.exportSize | 0] || EXPORT_SIZES[0];
+  let w, h;
+  if (entry.custom) { w = state.exportWidth; h = state.exportHeight; }
+  else if (entry.mul) { w = viewW * entry.mul; h = viewH * entry.mul; }
+  else { w = entry.w; h = entry.h; }
+  return { w: Math.max(16, Math.round(w)), h: Math.max(16, Math.round(h)), label: entry.label };
+}
+
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
