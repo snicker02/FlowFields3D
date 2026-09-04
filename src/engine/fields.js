@@ -10,6 +10,7 @@
 // geometry stage, so Lorenz (span ~60) and a unit gyroid frame identically.
 
 import { curlNoise, mulberry32 } from './noise.js';
+import { fractalFold, identity3, octaveRotations } from './fractal.js';
 import { cross, dot, normalize } from './vecmath.js';
 
 const P_ = (id, label, def, min, max, step = 0.001) => ({ id, label, def, min, max, step });
@@ -571,13 +572,47 @@ export function makeEvaluator(cfg, ctx) {
   const scaleB = cfg.domain / fB.domain;
 
   const M = new Float64Array(9);
-  const p = [0, 0, 0], vA = [0, 0, 0], vB = [0, 0, 0], warp = [0, 0, 0];
+  const p = [0, 0, 0], vA = [0, 0, 0], vB = [0, 0, 0], warp = [0, 0, 0], tmp = [0, 0, 0];
   const blend = cfg.blend, mode = cfg.blendMode, sym = cfg.symmetry;
   const useB = blend > 0.0005;
 
+  const frac = cfg.fractal || {};
+  const foldMode = frac.mode | 0;
+  const oct = Math.max(1, Math.min(6, frac.octaves | 0 || 1));
+  const lac = frac.lacunarity || 2;
+  const gain = frac.gain == null ? 0.5 : frac.gain;
+  const rots = oct > 1 ? octaveRotations(oct, frac.octaveSpin || 0) : null;
+
+  // Self-similar sum of a field over scales. Each term is a rotated, scaled
+  // pullback, so a divergence-free field stays divergence free.
+  function sample(f, P, c, scale, px, py, pz, out) {
+    if (oct === 1) { f.fn(px / scale, py / scale, pz / scale, P, c, out); return out; }
+    let sx = 0, sy = 0, sz = 0, amp = 1, freq = 1, norm = 0;
+    for (let i = 0; i < oct; i++) {
+      const R = rots[i];
+      const qx = (R[0] * px + R[1] * py + R[2] * pz) * freq / scale;
+      const qy = (R[3] * px + R[4] * py + R[5] * pz) * freq / scale;
+      const qz = (R[6] * px + R[7] * py + R[8] * pz) * freq / scale;
+      f.fn(qx, qy, qz, P, c, tmp);
+      sx += amp * (R[0] * tmp[0] + R[3] * tmp[1] + R[6] * tmp[2]);
+      sy += amp * (R[1] * tmp[0] + R[4] * tmp[1] + R[7] * tmp[2]);
+      sz += amp * (R[2] * tmp[0] + R[5] * tmp[1] + R[8] * tmp[2]);
+      norm += amp;
+      amp *= gain;
+      freq *= lac;
+    }
+    out[0] = sx / norm; out[1] = sy / norm; out[2] = sz / norm;
+    return out;
+  }
+
   return function evaluate(x, y, z, out) {
     p[0] = x; p[1] = y; p[2] = z;
+    // The symmetry fold resets M; the fractal fold accumulates on top of it, so
+    // the two compose into one orthogonal map and one pullback at the end.
     if (sym) foldPoint(sym, p, M, cfg.domain * 0.55);
+    else if (foldMode) identity3(M);
+    if (foldMode) fractalFold(frac, p, M);
+    const folded = sym || foldMode;
     let px = p[0], py = p[1], pz = p[2];
 
     if (cfg.warp > 0.0005) {
@@ -587,11 +622,11 @@ export function makeEvaluator(cfg, ctx) {
       px += warp[0] * w; py += warp[1] * w; pz += warp[2] * w;
     }
 
-    fA.fn(px / scaleA, py / scaleA, pz / scaleA, PA, ctxA, vA);
+    sample(fA, PA, ctxA, scaleA, px, py, pz, vA);
     let vx = vA[0], vy = vA[1], vz = vA[2];
 
     if (useB) {
-      fB.fn(px / scaleB, py / scaleB, pz / scaleB, PB, ctxB, vB);
+      sample(fB, PB, ctxB, scaleB, px, py, pz, vB);
       if (mode === 1) {                                   // add
         vx += vB[0] * blend; vy += vB[1] * blend; vz += vB[2] * blend;
       } else if (mode === 2) {                            // cross product
@@ -610,7 +645,7 @@ export function makeEvaluator(cfg, ctx) {
       }
     }
 
-    if (sym) {                                            // map velocity back: M^T v
+    if (folded) {                                         // map velocity back: M^T v
       const ux = M[0] * vx + M[3] * vy + M[6] * vz;
       const uy = M[1] * vx + M[4] * vy + M[7] * vz;
       const uz = M[2] * vx + M[5] * vy + M[8] * vz;
