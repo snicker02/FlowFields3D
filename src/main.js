@@ -9,6 +9,7 @@
 
 import { Noise } from './engine/noise.js';
 import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
+import { foldStepScale } from './engine/fractal.js';
 import { Tracer } from './engine/integrator.js';
 import { prepareCurves, buildMesh } from './engine/geometry.js';
 import { Gradient } from './engine/palette.js';
@@ -110,6 +111,9 @@ function traceConfig() {
     maxCurves: Math.max(20, Math.round(s.trace.maxCurves * scale)),
     seedCount: Math.max(20, Math.round(s.trace.seedCount * scale)),
     maxSteps: Math.max(20, Math.round(s.trace.maxSteps * (app.draft ? 0.55 : 1))),
+    // Folding compresses the field, so hold the samples-per-feature roughly
+    // constant instead of letting the detail slip between steps.
+    stepFrac: s.trace.stepFrac / foldStepScale(s.field.fractal),
   };
 }
 
@@ -126,7 +130,8 @@ function startTrace() {
       fieldA: s.field.fieldA, paramsA: s.field.paramsA,
       fieldB: s.field.fieldB, paramsB: s.field.paramsB,
       blend: s.field.blend, blendMode: s.field.blendMode,
-      symmetry: s.field.symmetry, warp: s.field.warp, warpScale: s.field.warpScale,
+      symmetry: s.field.symmetry, fractal: s.field.fractal,
+      warp: s.field.warp, warpScale: s.field.warpScale,
       swirl: s.field.swirl, drift: s.field.drift, domain: s.field.domain,
     }, ctx);
   } catch (e) {
