@@ -277,7 +277,8 @@ function buildToolbar() {
     });
   });
 
-  el('hide').addEventListener('click', () => document.body.classList.toggle('panel-hidden'));
+  el('hide').addEventListener('click', () => setPanelHidden(true));
+  el('show').addEventListener('click', () => setPanelHidden(false));
 }
 
 function applyPreset(i) {
@@ -315,12 +316,33 @@ function shuffle() {
   schedule('trace');
 }
 
+function setPanelHidden(hidden) {
+  const sidebar = el('sidebar');
+  document.body.classList.toggle('panel-hidden', hidden);
+  sidebar.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+  if (hidden) {
+    // Move focus off the panel before it goes away, so the h key still reaches
+    // the window and the tab order does not wander into a hidden region.
+    if (document.activeElement && sidebar.contains(document.activeElement)) document.activeElement.blur();
+    el('show').focus();
+  } else {
+    el('hide').focus();
+  }
+}
+
 function onKey(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  // h is deliberately not gated on where the focus is: it is the way out of a
+  // hidden panel, so it has to work from anywhere. No control here takes typed
+  // text, so nothing is lost by claiming the letter.
+  if (k === 'h') { e.preventDefault(); setPanelHidden(!document.body.classList.contains('panel-hidden')); return; }
+
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-  if (e.key === 'r') { el('regen').click(); }
-  else if (e.key === ' ') { e.preventDefault(); shuffle(); }
-  else if (e.key === 'h') { document.body.classList.toggle('panel-hidden'); }
-  else if (e.key === 'p') { savePNG(); }
+  if (k === 'r') { el('regen').click(); }
+  else if (k === ' ') { e.preventDefault(); shuffle(); }
+  else if (k === 'p') { savePNG(); }
 }
 
 // ---------------------------------------------------------------- exports
