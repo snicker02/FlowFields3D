@@ -7,7 +7,7 @@ precision highp float;
 attribute vec3 aPos;
 attribute vec3 aNormal;
 attribute vec3 aColor;
-attribute vec2 aParam;      // x = arclength 0..1, y = per-curve random
+attribute vec3 aParam;      // x = arclength 0..1, y = per-curve random, z = across the form 0..1
 
 uniform mat4 uMVP;
 uniform mat4 uModelView;
@@ -16,7 +16,7 @@ uniform mat3 uNormalMat;
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vViewPos;
-varying vec2 vParam;
+varying vec3 vParam;
 
 void main() {
   vNormal = uNormalMat * aNormal;
@@ -34,8 +34,10 @@ precision highp float;
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vViewPos;
-varying vec2 vParam;
+varying vec3 vParam;
 
+// Shared with the vertex stage: the mirror needs it to get back to world space.
+uniform mat3 uNormalMat;
 uniform vec3 uLightDir;      // view space, pointing at the light
 uniform vec3 uLightColor;
 uniform vec3 uSkyColor;
@@ -53,9 +55,61 @@ uniform float uFlowStrength;
 uniform float uOpacity;
 uniform float uFlat;         // 1.0 = unlit (line / ink mode)
 uniform float uExposure;
+uniform float uMaterial;     // 0 satin, 1 mirror, 2 glass
+uniform float uTexMode;      // 0 none, then bands / stripes / checker / weave / dots / grain / hatch
+uniform float uTexScale;     // repeats along the curve
+uniform float uTexRepeat;    // repeats across the form
+uniform float uTexAmount;
+uniform float uTexSoft;
+
+// Deliberately built from sines and smoothstep rather than step() and fwidth():
+// derivatives need GL_OES_standard_derivatives, which WebGL1 does not promise,
+// and a hard step on a ribbon a few pixels wide aliases into noise.
+float band(float x, float soft) {
+  return smoothstep(-soft, soft, sin(x * 6.2831853));
+}
+
+float hash12(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float valueNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+float patternAt(float u, float w) {
+  float soft = max(0.02, uTexSoft);
+  if (uTexMode < 1.5) return band(u, soft);                                  // cross bands
+  if (uTexMode < 2.5) return band(w, soft);                                  // lengthwise stripes
+  if (uTexMode < 3.5) return band(u, soft) * band(w, soft)                   // checker
+                           + (1.0 - band(u, soft)) * (1.0 - band(w, soft));
+  if (uTexMode < 4.5) {                                                      // weave
+    float a = band(u, soft), b = band(w, soft);
+    return mix(a, b, 0.5) * 0.6 + abs(a - b) * 0.4;
+  }
+  if (uTexMode < 5.5) {                                                      // dots
+    vec2 g = vec2(fract(u) - 0.5, fract(w) - 0.5);
+    return smoothstep(0.34, 0.34 - soft * 0.5, length(g));
+  }
+  if (uTexMode < 6.5) return valueNoise(vec2(u, w) * 3.0);                   // grain
+  return band(u + w, soft);                                                  // diagonal hatch
+}
 
 void main() {
+  float alpha = uOpacity;
   vec3 base = vColor;
+
+  if (uTexMode > 0.5 && uTexAmount > 0.001) {
+    // The per-curve random offsets the pattern so neighbouring ribbons do not
+    // line up into a single sheet.
+    float u = vParam.x * uTexScale + vParam.y * 3.7;
+    float w = vParam.z * uTexRepeat;
+    float m = clamp(patternAt(u, w), 0.0, 1.0);
+    base *= 1.0 - uTexAmount * (1.0 - m);
+  }
 
   // travelling highlight along each curve — cheap animation that needs no retrace
   if (uFlowStrength > 0.0) {
@@ -81,6 +135,28 @@ void main() {
     color = base * (uAmbient * hemi + ndl * uLightColor);
     color += spec * uLightColor;
     color += rim * mix(base, uSkyColor, 0.5);
+
+    if (uMaterial > 0.5) {
+      // No cube map and no scene sampling in a WebGL1 single pass, so the
+      // environment is the same sky/ground the ambient term already uses,
+      // sampled along the reflected view vector. Multiplying by uNormalMat on
+      // the right transposes it, taking the reflection back into world space so
+      // the mirror stays put while the camera orbits.
+      vec3 R = reflect(-V, N);
+      vec3 wR = R * uNormalMat;
+      vec3 env = mix(uGroundColor, uSkyColor, clamp(wR.y * 0.5 + 0.5, 0.0, 1.0));
+      env += uLightColor * pow(max(dot(R, L), 0.0), 96.0) * 2.0;
+      float fres = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+
+      if (uMaterial < 1.5) {
+        vec3 chrome = env * mix(base, vec3(1.0), 0.45);
+        color = mix(chrome, env, fres * 0.8) + spec * uLightColor;
+      } else {
+        vec3 through = base * (uAmbient * hemi + ndl * uLightColor) * 0.55;
+        color = through + env * (0.15 + 0.85 * fres) + spec * uLightColor * 1.5;
+        alpha *= mix(0.16, 1.0, fres);
+      }
+    }
   }
 
   float depth = max(0.0, -vViewPos.z - uFogStart);
@@ -88,7 +164,7 @@ void main() {
   color = mix(color, uFogColor, clamp(fog, 0.0, 1.0));
   color *= uExposure;
 
-  gl_FragColor = vec4(color, uOpacity);
+  gl_FragColor = vec4(color, alpha);
 }
 `;
 

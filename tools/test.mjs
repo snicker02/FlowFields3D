@@ -16,6 +16,7 @@ import { defaultState, mergeState, reconcileFieldParams } from '../src/state.js'
 import { PRESETS } from '../src/presets.js';
 import { fractalFold, identity3, foldStepScale, octaveRotations, FOLD_MODES } from '../src/engine/fractal.js';
 import { chunksToOBJ, preparedToSVG, EXPORT_SIZES, resolveExportSize } from '../src/io/exporters.js';
+import { RIBBON_VS, RIBBON_FS } from '../src/engine/shaders.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
 
 let pass = 0, fail = 0;
@@ -205,6 +206,76 @@ section('symmetry');
     }
   }
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------- material and texture
+section('material and texture');
+{
+  // Every uniform the renderer sets must exist in the shader, and every style
+  // field it reads must exist in the state. Both halves have silently broken
+  // before — a mirror term referencing a matrix the fragment stage never
+  // declared compiled fine in the vertex stage and failed only at link time.
+  const src = RIBBON_VS + RIBBON_FS;
+  const declared = new Set([...src.matchAll(/uniform\s+\w+\s+(\w+)/g)].map((m) => m[1]));
+  const setByRenderer = ['uMVP', 'uModelView', 'uNormalMat', 'uLightDir', 'uLightColor', 'uSkyColor',
+    'uGroundColor', 'uAmbient', 'uSpecular', 'uShininess', 'uRim', 'uFogColor', 'uFogDensity',
+    'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
+    'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft'];
+  for (const name of setByRenderer) ok(`shader declares ${name}`, declared.has(name));
+
+  const look = defaultState().look;
+  for (const key of ['material', 'texMode', 'texScale', 'texRepeat', 'texAmount', 'texSoft']) {
+    ok(`state has look.${key}`, look[key] !== undefined && isFinite(look[key]));
+  }
+
+  // The texture coordinate: three floats per vertex, the third in 0..1.
+  const curves = [{ n: 40, pts: new Float32Array(120), speed: new Float32Array(40) }];
+  for (let i = 0; i < 40; i++) {
+    curves[0].pts[i * 3] = Math.cos(i * 0.15);
+    curves[0].pts[i * 3 + 1] = Math.sin(i * 0.15);
+    curves[0].pts[i * 3 + 2] = i * 0.02;
+    curves[0].speed[i] = 1;
+  }
+  const grad = new Gradient(defaultState().color.gradient);
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    const opts = {
+      h: 0.02, geomMode, sides: 6, aspect: 1, width: 0.02, widthMode: 0, widthAmount: 0.5,
+      taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+    };
+    const prep = prepareCurves(curves, opts, grad);
+    const chunks = buildMesh(prep, opts);
+    let stride = true, range = true;
+    for (const c of chunks) {
+      if (c.params.length !== c.vertexCount * 3) stride = false;
+      for (let i = 2; i < c.params.length; i += 3) {
+        if (!(c.params[i] >= 0 && c.params[i] <= 1)) range = false;
+      }
+    }
+    ok(`form ${geomMode}: three params per vertex`, stride);
+    ok(`form ${geomMode}: texture coordinate is in 0..1`, range);
+  }
+
+  // A ribbon's two edges must be 0 and 1, or a lengthwise stripe would not span
+  // the ribbon.
+  {
+    const opts = {
+      h: 0.02, geomMode: 0, sides: 6, aspect: 1, width: 0.02, widthMode: 0, widthAmount: 0.5,
+      taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+    };
+    const c = buildMesh(prepareCurves(curves, opts, grad), opts)[0];
+    ok('ribbon edges are 0 and 1', c.params[2] === 0 && c.params[5] === 1,
+      `${c.params[2]} / ${c.params[5]}`);
+  }
+
+  // Glass must blend even at full opacity, or the Fresnel alpha does nothing.
+  // This mirrors the condition in renderer.js.
+  const needsBlend = (style) => style.renderMode === 1
+    || (style.renderMode === 0 && (style.material | 0) === 2)
+    || style.opacity < 0.999;
+  ok('glass blends at full opacity', needsBlend({ renderMode: 0, material: 2, opacity: 1 }));
+  ok('satin at full opacity does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1 }));
+  ok('mirror at full opacity does not blend', !needsBlend({ renderMode: 0, material: 1, opacity: 1 }));
+  ok('flat mode ignores the material', !needsBlend({ renderMode: 2, material: 2, opacity: 1 }));
 }
 
 // ---------------------------------------------------------------- tiled export

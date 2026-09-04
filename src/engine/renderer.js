@@ -48,7 +48,8 @@ export class Renderer {
     };
     this.uni = uniforms(gl, this.prog, ['uMVP', 'uModelView', 'uNormalMat', 'uLightDir', 'uLightColor',
       'uSkyColor', 'uGroundColor', 'uAmbient', 'uSpecular', 'uShininess', 'uRim', 'uFogColor',
-      'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure']);
+      'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
+      'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -133,11 +134,15 @@ export class Renderer {
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     const additive = style.renderMode === 1;
+    // Glass sets its own alpha from the Fresnel term, so it needs blending even
+    // when opacity is 1. Without sorted geometry the ordering is approximate;
+    // leaving the depth buffer read-only is what keeps it from looking wrong.
+    const glass = style.renderMode === 0 && (style.material | 0) === 2;
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.depthMask(false);
-    } else if (style.opacity < 0.999) {
+    } else if (glass || style.opacity < 0.999) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
@@ -166,12 +171,18 @@ export class Renderer {
     gl.uniform1f(u.uOpacity, additive ? style.opacity : Math.max(0.02, style.opacity));
     gl.uniform1f(u.uFlat, style.renderMode === 2 || style.renderMode === 1 ? 1 : 0);
     gl.uniform1f(u.uExposure, style.exposure);
+    gl.uniform1f(u.uMaterial, style.renderMode === 0 ? (style.material | 0) : 0);
+    gl.uniform1f(u.uTexMode, style.texMode | 0);
+    gl.uniform1f(u.uTexScale, style.texScale);
+    gl.uniform1f(u.uTexRepeat, style.texRepeat);
+    gl.uniform1f(u.uTexAmount, style.texAmount);
+    gl.uniform1f(u.uTexSoft, style.texSoft);
 
     for (const b of this.buffers) {
       bind(gl, b.pos, this.attr.pos, 3);
       bind(gl, b.nor, this.attr.nor, 3);
       bind(gl, b.col, this.attr.col, 3);
-      bind(gl, b.par, this.attr.par, 2);
+      bind(gl, b.par, this.attr.par, 3);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
       gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
     }

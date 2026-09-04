@@ -129,6 +129,16 @@ export const SCHEMA = [
     ],
   },
   {
+    title: 'Material and texture', open: false, controls: [
+      { type: 'select', path: 'look.material', label: 'Material', options: ['Satin', 'Mirror', 'Glass'], level: 'none' },
+      { type: 'select', path: 'look.texMode', label: 'Texture', options: ['None', 'Cross bands', 'Lengthwise stripes', 'Checker', 'Weave', 'Dots', 'Grain', 'Diagonal hatch'], level: 'none' },
+      { type: 'slider', path: 'look.texScale', label: 'Repeats along', min: 1, max: 120, step: 1, level: 'none' },
+      { type: 'slider', path: 'look.texRepeat', label: 'Repeats across', min: 1, max: 16, step: 1, level: 'none' },
+      { type: 'slider', path: 'look.texAmount', label: 'Texture depth', min: 0, max: 1, step: 0.005, level: 'none' },
+      { type: 'slider', path: 'look.texSoft', label: 'Edge softness', min: 0.02, max: 1, step: 0.005, level: 'none' },
+    ],
+  },
+  {
     title: 'Export', open: false, controls: [
       { type: 'select', path: 'look.exportSize', label: 'PNG size', options: EXPORT_SIZES.map((e) => e.label), level: 'none' },
       { type: 'slider', path: 'look.exportWidth', label: 'Custom width', min: 256, max: 20000, step: 16, level: 'none' },

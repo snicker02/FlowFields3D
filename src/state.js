@@ -108,6 +108,12 @@ export function defaultState() {
       renderMode: 0,          // 0 shaded, 1 additive, 2 flat
       cull: false,
       autoRotate: 0,
+      material: 0,            // 0 satin, 1 mirror, 2 glass
+      texMode: 0,             // 0 none, 1 bands, 2 stripes, 3 checker, 4 weave, 5 dots, 6 grain, 7 hatch
+      texScale: 12,
+      texRepeat: 3,
+      texAmount: 0.5,
+      texSoft: 0.35,
       exportSize: 1,          // index into EXPORT_SIZES
       exportWidth: 6000,
       exportHeight: 4000,

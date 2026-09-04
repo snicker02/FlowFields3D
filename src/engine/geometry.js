@@ -293,8 +293,8 @@ export function buildMesh(prepared, opts) {
       rgb[0] = col[i3]; rgb[1] = col[i3 + 1]; rgb[2] = col[i3 + 2];
 
       if (mode === 0) {
-        pushVert(chunk, px - ux * w, py - uy * w, pz - uz * w, wx, wy, wz, rgb, s, it.rnd);
-        pushVert(chunk, px + ux * w, py + uy * w, pz + uz * w, wx, wy, wz, rgb, s, it.rnd);
+        pushVert(chunk, px - ux * w, py - uy * w, pz - uz * w, wx, wy, wz, rgb, s, it.rnd, 0);
+        pushVert(chunk, px + ux * w, py + uy * w, pz + uz * w, wx, wy, wz, rgb, s, it.rnd, 1);
       } else if (mode === 1) {
         const rx = w, ry = Math.max(1e-6, w * opts.aspect);
         for (let k = 0; k < sides; k++) {
@@ -307,7 +307,7 @@ export function buildMesh(prepared, opts) {
           const ny = (uy * ca) / rx + (wy * sa) / ry;
           const nz = (uz * ca) / rx + (wz * sa) / ry;
           const nl = Math.hypot(nx, ny, nz) || 1;
-          pushVert(chunk, px + ox, py + oy, pz + oz, nx / nl, ny / nl, nz / nl, rgb, s, it.rnd);
+          pushVert(chunk, px + ox, py + oy, pz + oz, nx / nl, ny / nl, nz / nl, rgb, s, it.rnd, k / sides);
         }
       } else if (mode === 3) {
         const rx = w, ry = Math.max(1e-6, w * opts.aspect);
@@ -321,11 +321,11 @@ export function buildMesh(prepared, opts) {
           const k2 = (k + 1) & 3;
           const nl = Math.hypot(fnx[k], fny[k], fnz[k]) || 1;
           const nx = fnx[k] / nl, ny = fny[k] / nl, nz = fnz[k] / nl;
-          pushVert(chunk, px + cx[k], py + cy[k], pz + cz[k], nx, ny, nz, rgb, s, it.rnd);
-          pushVert(chunk, px + cx[k2], py + cy[k2], pz + cz[k2], nx, ny, nz, rgb, s, it.rnd);
+          pushVert(chunk, px + cx[k], py + cy[k], pz + cz[k], nx, ny, nz, rgb, s, it.rnd, k / 4);
+          pushVert(chunk, px + cx[k2], py + cy[k2], pz + cz[k2], nx, ny, nz, rgb, s, it.rnd, (k + 1) / 4);
         }
       } else {
-        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd);
+        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5);
       }
     }
 
@@ -358,9 +358,12 @@ export function buildMesh(prepared, opts) {
   return chunks;
 }
 
-function pushVert(chunk, x, y, z, nx, ny, nz, rgb, s, rnd) {
+function pushVert(chunk, x, y, z, nx, ny, nz, rgb, s, rnd, v) {
   chunk.positions.push(x, y, z);
   chunk.normals.push(nx, ny, nz);
   chunk.colors.push(rgb[0], rgb[1], rgb[2]);
-  chunk.params.push(s, rnd);
+  // s runs along the curve, rnd is a per-curve constant, v runs across the
+  // form (edge to edge on a ribbon, around a tube or box). Procedural
+  // texturing needs that second coordinate; nothing else uses it.
+  chunk.params.push(s, rnd, v);
 }

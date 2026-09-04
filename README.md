@@ -135,6 +135,37 @@ draft budget and snaps back on release.
 The flow animation is a travelling highlight computed in the fragment shader, so
 it costs nothing per frame and never re-traces.
 
+## Materials and texture
+
+Three materials. **Satin** is the original hemisphere-ambient shading.
+**Mirror** reflects the view vector into the same sky/ground environment the
+ambient term already uses, tinted by the ribbon colour, with a Fresnel-weighted
+falloff to raw environment at grazing angles. **Glass** keeps a dimmed
+transmitted term, adds the environment weighted by Fresnel, and drives its own
+alpha from the same term so faces are transparent and edges are not.
+
+There is no cube map and no scene sampling — a WebGL1 single pass has neither.
+The environment is analytic, which is why it costs nothing and why it will not
+show you one ribbon reflected in another. The reflection is taken back into
+world space (by multiplying the reflection vector on the *right* by the normal
+matrix, which transposes it) so the mirror stays put while you orbit, rather
+than sliding around like a matcap.
+
+Glass is blended without sorting the geometry, so the ordering is approximate.
+Depth writes are off, which is what keeps that from looking obviously wrong.
+
+Seven procedural textures — cross bands, lengthwise stripes, checker, weave,
+dots, grain, diagonal hatch — with controls for repeats along and across,
+depth, and edge softness. They need a coordinate across the form as well as
+along it, so vertices now carry three parameters instead of two: arclength, a
+per-curve random, and an edge-to-edge coordinate that also wraps a tube or box.
+The per-curve random offsets each pattern so neighbouring ribbons do not line up
+into one sheet.
+
+Every pattern is built from sines and `smoothstep` rather than `step` and
+`fwidth`. Derivatives need `GL_OES_standard_derivatives`, which WebGL1 does not
+promise, and a hard step on a ribbon a few pixels wide aliases into noise.
+
 ## Export
 
 - **PNG** — at any size up to 300 megapixels, through the same render path as
