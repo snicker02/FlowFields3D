@@ -49,7 +49,9 @@ export class Renderer {
     this.uni = uniforms(gl, this.prog, ['uMVP', 'uModelView', 'uNormalMat', 'uLightDir', 'uLightColor',
       'uSkyColor', 'uGroundColor', 'uAmbient', 'uSpecular', 'uShininess', 'uRim', 'uFogColor',
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
-      'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft']);
+      'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
+      'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
+      'uTravelCount', 'uTravelGlow']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -147,13 +149,15 @@ export class Renderer {
     // leaving the depth buffer read-only is what keeps it from looking wrong.
     const glass = style.renderMode === 0 && (style.material | 0) === 2;
     // Sorting only matters where the result depends on draw order.
+    // Travel fades the tail out, so it wants the same treatment as glass.
+    const travelling = (style.travelMode | 0) > 0;
     const needsSort = !!style.sortDepth && !!look.viewDir
-      && (glass || additive || style.opacity < 0.999);
+      && (glass || additive || travelling || style.opacity < 0.999);
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.depthMask(false);
-    } else if (glass || style.opacity < 0.999) {
+    } else if (glass || travelling || style.opacity < 0.999) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
@@ -188,6 +192,13 @@ export class Renderer {
     gl.uniform1f(u.uTexRepeat, style.texRepeat);
     gl.uniform1f(u.uTexAmount, style.texAmount);
     gl.uniform1f(u.uTexSoft, style.texSoft);
+    gl.uniform1f(u.uTravelMode, style.travelMode | 0);
+    gl.uniform1f(u.uTravelLen, style.travelLength);
+    gl.uniform1f(u.uTravelPhase, style.travelPhase);
+    gl.uniform1f(u.uTravelSoft, style.travelSoft);
+    gl.uniform1f(u.uTravelStagger, style.travelStagger);
+    gl.uniform1f(u.uTravelCount, style.travelCount);
+    gl.uniform1f(u.uTravelGlow, style.travelGlow);
 
     if (needsSort) this.sortForView(look.viewDir);
 

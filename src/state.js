@@ -116,6 +116,14 @@ export function defaultState() {
       renderMode: 0,          // 0 shaded, 1 additive, 2 flat
       cull: false,
       autoRotate: 0,
+      travelMode: 0,          // 0 off, 1 comet, 2 dashes, 3 wipe
+      travelLength: 0.25,
+      travelSpeed: 0.25,
+      travelPhase: 0,
+      travelSoft: 0.6,
+      travelStagger: 1,
+      travelCount: 4,
+      travelGlow: 0.8,
       sortDepth: true,
       material: 0,            // 0 satin, 1 mirror, 2 glass
       texMode: 0,             // 0 none, 1 bands, 2 stripes, 3 checker, 4 weave, 5 dots, 6 grain, 7 hatch
@@ -128,6 +136,7 @@ export function defaultState() {
       videoFps: 30,
       videoTurns: 1,          // camera revolutions across the clip
       videoFlowCycles: 2,     // flow-highlight cycles across the clip
+      videoTravelCycles: 1,   // travel loops across the clip
       videoQuality: 16,       // Mbit/s
       exportSize: 1,          // index into EXPORT_SIZES
       exportWidth: 6000,

@@ -132,8 +132,21 @@ Tracing runs in time slices from the animation loop, so the UI stays live and
 you get a progress bar. While a slider is being dragged the tracer drops to a
 draft budget and snaps back on release.
 
-The flow animation is a travelling highlight computed in the fragment shader, so
-it costs nothing per frame and never re-traces.
+Two animations, both free. The **flow pulse** is a travelling highlight computed
+in the fragment shader. **Travel** goes further and reveals only a moving window
+of each curve — comet, dashes, or a wipe that draws the curve and repeats. A
+streamline is the path a particle takes through the field, so walking a window
+along it is not a decoration: it is the motion the field describes. Controls for
+trail length, speed, dash count, per-curve stagger, tail softness and head glow.
+
+Both cost one uniform per frame, because the geometry never changes and nothing
+re-traces. Travel fades its tail, so it turns on blending and depth sorting the
+same way glass does, and discards fully dark fragments to keep the depth buffer
+clean.
+
+What is *not* animated is field evolution. Several fields take `time`, but
+changing it re-integrates every streamline, which is a frame-sequence job rather
+than a realtime one.
 
 ## Confinement volumes
 

@@ -200,6 +200,10 @@ function loop(t) {
     look.flowPhase += look.flowSpeed * dt;
     app.dirtyDraw = true;
   }
+  if (look.travelMode > 0 && look.travelSpeed !== 0) {
+    look.travelPhase += look.travelSpeed * dt;
+    app.dirtyDraw = true;
+  }
 
   if (app.dirtyDraw) draw();
   requestAnimationFrame(loop);
@@ -386,7 +390,7 @@ async function saveVideo() {
 
   const fps = Math.max(1, Math.round(look.videoFps));
   const frames = Math.max(1, Math.round(look.videoSeconds * fps));
-  const yaw0 = app.camera.yaw, phase0 = look.flowPhase;
+  const yaw0 = app.camera.yaw, phase0 = look.flowPhase, travel0 = look.travelPhase;
   const { w, h } = viewportSize();
 
   app.exporting = true;
@@ -407,6 +411,7 @@ async function saveVideo() {
       drawFrame: (i, t) => {
         app.camera.yaw = yaw0 + t * look.videoTurns * Math.PI * 2;
         look.flowPhase = phase0 + t * look.videoFlowCycles;
+        look.travelPhase = travel0 + t * look.videoTravelCycles;
         app.camera.update(w / h);
         app.renderer.renderScene(
           { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
@@ -425,6 +430,7 @@ async function saveVideo() {
   } finally {
     app.camera.yaw = yaw0;
     look.flowPhase = phase0;
+    look.travelPhase = travel0;
     setProgress(0);
     app.exporting = false;
     app.camera.update(w / h);

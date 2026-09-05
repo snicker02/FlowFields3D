@@ -61,6 +61,13 @@ uniform float uTexScale;     // repeats along the curve
 uniform float uTexRepeat;    // repeats across the form
 uniform float uTexAmount;
 uniform float uTexSoft;
+uniform float uTravelMode;   // 0 off, 1 comet, 2 dashes, 3 wipe
+uniform float uTravelLen;    // fraction of the curve that is lit
+uniform float uTravelPhase;
+uniform float uTravelSoft;
+uniform float uTravelStagger;
+uniform float uTravelCount;  // dashes per curve
+uniform float uTravelGlow;   // extra brightness at the leading edge
 
 // Deliberately built from sines and smoothstep rather than step() and fwidth():
 // derivatives need GL_OES_standard_derivatives, which WebGL1 does not promise,
@@ -101,6 +108,32 @@ float patternAt(float u, float w) {
 void main() {
   float alpha = uOpacity;
   vec3 base = vColor;
+
+  // Travel: reveal a moving window of each curve rather than the whole thing.
+  // A streamline is the path a particle takes through the field, so walking a
+  // window along it is not a decoration — it is the motion the field describes,
+  // and it costs one uniform per frame because the geometry never changes.
+  float head = 0.0;
+  float lit = 1.0;
+  if (uTravelMode > 0.5) {
+    float phase = uTravelPhase + vParam.y * uTravelStagger;
+    float len = max(0.004, uTravelLen);
+    if (uTravelMode < 1.5) {                       // comet: one head, one tail
+      float behind = fract(fract(phase) - vParam.x + 1.0);
+      lit = 1.0 - smoothstep(len * (1.0 - uTravelSoft), len, behind);
+      head = 1.0 - clamp(behind / len, 0.0, 1.0);
+    } else if (uTravelMode < 2.5) {                // dashes marching along
+      float b = fract((vParam.x - phase) * max(1.0, uTravelCount));
+      lit = 1.0 - smoothstep(len * (1.0 - uTravelSoft), len, b);
+      head = 1.0 - clamp(b / len, 0.0, 1.0);
+    } else {                                       // wipe: draws itself, repeats
+      float front = fract(phase);
+      lit = 1.0 - smoothstep(front, front + max(0.002, uTravelSoft * 0.25), vParam.x);
+      head = 1.0 - clamp((front - vParam.x) / len, 0.0, 1.0);
+    }
+    if (lit < 0.02) discard;                       // keeps the depth buffer clean
+    alpha *= lit;
+  }
 
   if (uTexMode > 0.5 && uTexAmount > 0.001) {
     // The per-curve random offsets the pattern so neighbouring ribbons do not
@@ -157,6 +190,10 @@ void main() {
         alpha *= mix(0.16, 1.0, fres);
       }
     }
+  }
+
+  if (uTravelMode > 0.5 && uTravelGlow > 0.0) {
+    color += color * head * head * uTravelGlow;
   }
 
   float depth = max(0.0, -vViewPos.z - uFogStart);

@@ -385,7 +385,9 @@ section('material and texture');
   const setByRenderer = ['uMVP', 'uModelView', 'uNormalMat', 'uLightDir', 'uLightColor', 'uSkyColor',
     'uGroundColor', 'uAmbient', 'uSpecular', 'uShininess', 'uRim', 'uFogColor', 'uFogDensity',
     'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
-    'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft'];
+    'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
+    'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
+    'uTravelCount', 'uTravelGlow'];
   for (const name of setByRenderer) ok(`shader declares ${name}`, declared.has(name));
 
   const look = defaultState().look;
@@ -436,11 +438,45 @@ section('material and texture');
   // This mirrors the condition in renderer.js.
   const needsBlend = (style) => style.renderMode === 1
     || (style.renderMode === 0 && (style.material | 0) === 2)
+    || (style.travelMode | 0) > 0
     || style.opacity < 0.999;
   ok('glass blends at full opacity', needsBlend({ renderMode: 0, material: 2, opacity: 1 }));
   ok('satin at full opacity does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1 }));
   ok('mirror at full opacity does not blend', !needsBlend({ renderMode: 0, material: 1, opacity: 1 }));
   ok('flat mode ignores the material', !needsBlend({ renderMode: 2, material: 2, opacity: 1 }));
+  ok('travel blends at full opacity', needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 1 }));
+  ok('travel off does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 0 }));
+
+  // The travel window must actually be a window: lit somewhere, dark elsewhere,
+  // and it must sweep the whole curve exactly once per unit of phase. This is
+  // the shader's arithmetic transcribed, so a change to one has to change both.
+  const comet = (s2, phase, len) => {
+    const behind = ((phase % 1) - s2 + 1) % 1;
+    return behind < len ? 1 - behind / len : 0;
+  };
+  for (const len of [0.1, 0.25, 0.5]) {
+    let anyLit = false, anyDark = false, wraps = true;
+    for (let i = 0; i <= 40; i++) {
+      const s2 = i / 40;
+      if (comet(s2, 0.5, len) > 0) anyLit = true; else anyDark = true;
+    }
+    ok(`comet at length ${len}: lights part of the curve`, anyLit && anyDark);
+    // Every point on the curve must be lit at some phase, or part of it is dead.
+    for (let i = 0; i <= 20; i++) {
+      const s2 = i / 20;
+      let everLit = false;
+      for (let k = 0; k < 40; k++) if (comet(s2, k / 40, len) > 0) { everLit = true; break; }
+      if (!everLit) wraps = false;
+    }
+    ok(`comet at length ${len}: sweeps the whole curve`, wraps);
+  }
+
+  const lookT = defaultState().look;
+  for (const key of ['travelMode', 'travelLength', 'travelSpeed', 'travelPhase', 'travelSoft',
+    'travelStagger', 'travelCount', 'travelGlow', 'videoTravelCycles']) {
+    ok(`state has look.${key}`, lookT[key] !== undefined);
+  }
+  ok('travel is off by default', lookT.travelMode === 0);
 }
 
 // ---------------------------------------------------------------- tiled export
