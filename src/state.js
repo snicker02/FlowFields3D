@@ -34,6 +34,14 @@ export function defaultState() {
         gain: 0.5,
         octaveSpin: 37,
       },
+      volume: {
+        shape: 0,             // see VOLUME_SHAPES
+        size: 0.75,           // fraction of the domain
+        thickness: 0.25,
+        round: 0.1,
+        frequency: 4,
+        invert: false,
+      },
       warp: 0,
       warpScale: 1.2,
       swirl: 0,
@@ -108,12 +116,19 @@ export function defaultState() {
       renderMode: 0,          // 0 shaded, 1 additive, 2 flat
       cull: false,
       autoRotate: 0,
+      sortDepth: true,
       material: 0,            // 0 satin, 1 mirror, 2 glass
       texMode: 0,             // 0 none, 1 bands, 2 stripes, 3 checker, 4 weave, 5 dots, 6 grain, 7 hatch
       texScale: 12,
       texRepeat: 3,
       texAmount: 0.5,
       texSoft: 0.35,
+      videoFormat: 'auto',    // auto | mp4 | webm-vp9 | webm-vp8
+      videoSeconds: 8,
+      videoFps: 30,
+      videoTurns: 1,          // camera revolutions across the clip
+      videoFlowCycles: 2,     // flow-highlight cycles across the clip
+      videoQuality: 16,       // Mbit/s
       exportSize: 1,          // index into EXPORT_SIZES
       exportWidth: 6000,
       exportHeight: 4000,

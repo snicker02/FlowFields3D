@@ -139,7 +139,24 @@ export class Tracer {
     this.dSep = cfg.domain * cfg.dSepFrac;
     this.dTest = this.dSep * cfg.dTestRatio;
 
-    this.queue = makeSeeds(cfg.seedMode, cfg.seedCount, R, cfg.seed, cfg.jitter);
+    // A confinement volume rejects seeds and stops curves at its surface. Seeds
+    // are oversampled first, because rejection throws most of them away when
+    // the volume is a thin shell.
+    this.inside = cfg.inside || null;
+    let seeds = makeSeeds(cfg.seedMode, cfg.seedCount, R, cfg.seed, cfg.jitter);
+    if (this.inside) {
+      const kept = seeds.filter((s2) => this.inside(s2[0], s2[1], s2[2]));
+      let tries = 0;
+      while (kept.length < cfg.seedCount && tries++ < 12) {
+        const more = makeSeeds(cfg.seedMode, cfg.seedCount, R, (cfg.seed | 0) + tries * 7919, cfg.jitter);
+        for (const s2 of more) {
+          if (kept.length >= cfg.seedCount) break;
+          if (this.inside(s2[0], s2[1], s2[2])) kept.push(s2);
+        }
+      }
+      seeds = kept;
+    }
+    this.queue = seeds;
     this.qi = 0;
     this.hash = cfg.even ? new SpatialHash(Math.max(this.dSep, this.h * 0.5)) : null;
     this.skip = Math.max(2, Math.ceil(this.dSep / this.h) + 1);
@@ -227,6 +244,7 @@ export class Tracer {
       if (sp <= cfg.minSpeed) { n++; break; }
       if (!isFinite(q[0]) || !isFinite(q[1]) || !isFinite(q[2])) { n++; break; }
       if (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] > b2) { n++; break; }
+      if (this.inside && !this.inside(q[0], q[1], q[2])) { n++; break; }
       if (useEven && this.hash.hasWithin(q[0], q[1], q[2], this.dTest, curveId, n, this.skip)) { n++; break; }
       if (useEven) this.hash.insert(p[0], p[1], p[2], curveId, n);
       p[0] = q[0]; p[1] = q[1]; p[2] = q[2];
@@ -258,7 +276,9 @@ export class Tracer {
         [(ux + vx) * s, (uy + vy) * s, (uz + vz) * s], [-(ux - vx) * s, -(uy - vy) * s, -(uz - vz) * s],
       ];
       for (const dv of dirs) {
-        this.queue.push([p[i * 3] + dv[0] * d, p[i * 3 + 1] + dv[1] * d, p[i * 3 + 2] + dv[2] * d]);
+        const cx = p[i * 3] + dv[0] * d, cy = p[i * 3 + 1] + dv[1] * d, cz = p[i * 3 + 2] + dv[2] * d;
+        if (this.inside && !this.inside(cx, cy, cz)) continue;
+        this.queue.push([cx, cy, cz]);
       }
     }
   }

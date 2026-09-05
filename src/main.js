@@ -10,6 +10,8 @@
 import { Noise } from './engine/noise.js';
 import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
 import { foldStepScale } from './engine/fractal.js';
+import { recordFrames, chooseVideoFormat, availableVideoFormats } from './io/recorder.js';
+import { makeVolume } from './engine/volume.js';
 import { Tracer } from './engine/integrator.js';
 import { prepareCurves, buildMesh } from './engine/geometry.js';
 import { Gradient } from './engine/palette.js';
@@ -114,6 +116,7 @@ function traceConfig() {
     // Folding compresses the field, so hold the samples-per-feature roughly
     // constant instead of letting the detail slip between steps.
     stepFrac: s.trace.stepFrac / foldStepScale(s.field.fractal),
+    inside: makeVolume(s.field.volume, s.field.domain),
   };
 }
 
@@ -214,7 +217,7 @@ function draw() {
   app.camera.fov = app.state.camera.fov;
   app.camera.update(w / h);
   app.renderer.renderScene(
-    { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat },
+    { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
     app.state.look, w, h,
   );
   app.dirtyDraw = false;
@@ -267,6 +270,7 @@ function buildToolbar() {
     downloadBlob(new Blob([chunksToOBJ(app.chunks)], { type: 'text/plain' }), `flowfield-${stamp()}.obj`);
   });
   el('svg').addEventListener('click', saveSVG);
+  el('video').addEventListener('click', saveVideo);
   el('save').addEventListener('click', () => {
     app.state.color.gradient = app.gradient.toJSON();
     downloadBlob(new Blob([stateToJSON(app.state)], { type: 'application/json' }), `flowfield-${stamp()}.json`);
@@ -362,6 +366,73 @@ function onKey(e) {
 // ---------------------------------------------------------------- exports
 
 /**
+ * Record a looping turntable. The clock is the frame index, not wall time, so
+ * the clip is the same length and the same motion whatever the machine manages
+ * per second — and because the camera does a whole number of turns and the flow
+ * a whole number of cycles, the last frame lands exactly where the first began.
+ */
+async function saveVideo() {
+  if (app.exporting) return;
+  const s = app.state, look = s.look;
+
+  const format = chooseVideoFormat(look.videoFormat);
+  if (!format) {
+    const have = availableVideoFormats();
+    setStatus(have.length
+      ? `This browser will not encode ${look.videoFormat}. It offers: ${have.map((f) => f.label).join(', ')}.`
+      : 'This browser cannot record video from a canvas.');
+    return;
+  }
+
+  const fps = Math.max(1, Math.round(look.videoFps));
+  const frames = Math.max(1, Math.round(look.videoSeconds * fps));
+  const yaw0 = app.camera.yaw, phase0 = look.flowPhase;
+  const { w, h } = viewportSize();
+
+  app.exporting = true;
+  app.cancelExport = false;
+  try {
+    app.renderer.resize(w, h);
+    const blob = await recordFrames({
+      canvas,
+      format,
+      fps,
+      frames,
+      bitrate: Math.round(look.videoQuality * 1e6),
+      shouldCancel: () => app.cancelExport,
+      onProgress: (f) => {
+        setProgress(f);
+        setStatus(`Recording ${format.label} — frame ${Math.round(f * frames)} of ${frames}`);
+      },
+      drawFrame: (i, t) => {
+        app.camera.yaw = yaw0 + t * look.videoTurns * Math.PI * 2;
+        look.flowPhase = phase0 + t * look.videoFlowCycles;
+        app.camera.update(w / h);
+        app.renderer.renderScene(
+          { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
+          look, w, h,
+        );
+      },
+    });
+    if (blob && blob.size) {
+      downloadBlob(blob, `flowfield-${stamp()}.${format.ext}`);
+      setStatus(`Saved ${frames} frames at ${fps} fps as ${format.label} — ${(blob.size / 1048576).toFixed(1)} MB`);
+    } else {
+      setStatus('The recording came back empty. Try a shorter clip or a different format.');
+    }
+  } catch (e) {
+    setStatus(`Recording failed: ${e.message}`);
+  } finally {
+    app.camera.yaw = yaw0;
+    look.flowPhase = phase0;
+    setProgress(0);
+    app.exporting = false;
+    app.camera.update(w / h);
+    app.dirtyDraw = true;
+  }
+}
+
+/**
  * Render a PNG at an arbitrary size by drawing it in tiles.
  *
  * A single huge drawing buffer is the obvious approach and the wrong one: a
@@ -426,7 +497,7 @@ async function savePNG() {
         app.renderer.resize(pw, ph);
         app.camera.update(W / H, rect);
         app.renderer.renderScene(
-          { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat },
+          { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
           s.look, pw, ph,
           [rect[0], rect[2], rect[1] - rect[0], rect[3] - rect[2]],
         );

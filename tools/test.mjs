@@ -17,6 +17,8 @@ import { PRESETS } from '../src/presets.js';
 import { fractalFold, identity3, foldStepScale, octaveRotations, FOLD_MODES } from '../src/engine/fractal.js';
 import { chunksToOBJ, preparedToSVG, EXPORT_SIZES, resolveExportSize } from '../src/io/exporters.js';
 import { RIBBON_VS, RIBBON_FS } from '../src/engine/shaders.js';
+import { makeVolume, VOLUME_SHAPES } from '../src/engine/volume.js';
+import { chooseVideoFormat, availableVideoFormats } from '../src/io/recorder.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
 
 let pass = 0, fail = 0;
@@ -206,6 +208,169 @@ section('symmetry');
     }
   }
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------- volumes
+section('confinement volumes');
+{
+  const st = defaultState();
+  const domain = st.field.domain;
+  const ev = makeEvaluator({
+    fieldA: st.field.fieldA, paramsA: st.field.paramsA, fieldB: st.field.fieldB, paramsB: st.field.paramsB,
+    blend: 0, blendMode: 0, symmetry: 0, fractal: st.field.fractal,
+    warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain,
+  }, { noise: new Noise(1337), noiseB: new Noise(7), time: 0 });
+
+  ok('no volume selected means no test at all', makeVolume({ shape: 0 }, domain) === null);
+
+  for (let shape = 1; shape < VOLUME_SHAPES.length; shape++) {
+    const cfg = { ...st.field.volume, shape };
+    const inside = makeVolume(cfg, domain);
+    const label = VOLUME_SHAPES[shape];
+
+    // The sign has to actually divide space, or "confinement" means nothing.
+    let hits = 0, misses = 0;
+    for (let i = 0; i < 3000; i++) {
+      const x = (mulberry32(i + 7)() * 2 - 1) * domain * 1.5;
+      const y = (mulberry32(i + 77)() * 2 - 1) * domain * 1.5;
+      const z = (mulberry32(i + 777)() * 2 - 1) * domain * 1.5;
+      if (inside(x, y, z)) hits++; else misses++;
+    }
+    ok(`${label}: divides space`, hits > 30 && misses > 30, `${hits} in / ${misses} out`);
+    ok(`${label}: distance is finite everywhere`, [[0, 0, 0], [domain, 0, 0], [0, -domain * 2, domain]]
+      .every((p) => isFinite(inside.sdf(p[0], p[1], p[2]))));
+
+    // Inverting must give exactly the complement.
+    const outsideOnly = makeVolume({ ...cfg, invert: true }, domain);
+    let complement = true;
+    for (let i = 0; i < 500; i++) {
+      const x = (mulberry32(i + 11)() * 2 - 1) * domain;
+      const y = (mulberry32(i + 111)() * 2 - 1) * domain;
+      const z = (mulberry32(i + 1111)() * 2 - 1) * domain;
+      if (inside(x, y, z) === outsideOnly(x, y, z)) { complement = false; break; }
+    }
+    ok(`${label}: inverting gives the complement`, complement);
+
+    // And the point of the whole thing: nothing traced may sit outside it.
+    const curves = new Tracer({
+      ...st.trace, domain, maxCurves: 40, seedCount: 120, maxSteps: 160, inside,
+    }, ev).runAll();
+    let escaped = 0, samples = 0;
+    for (const c of curves) {
+      for (let i = 0; i < c.n; i++) {
+        samples++;
+        if (!inside(c.pts[i * 3], c.pts[i * 3 + 1], c.pts[i * 3 + 2])) escaped++;
+      }
+    }
+    ok(`${label}: streamlines stay inside`, escaped === 0, `${escaped} of ${samples} samples escaped`);
+    ok(`${label}: something survives`, curves.length > 0, `${curves.length} curves`);
+  }
+
+  // A volume must not change anything when it is off.
+  {
+    const a = new Tracer({ ...st.trace, domain, maxCurves: 30, seedCount: 80, maxSteps: 120 }, ev).runAll();
+    const b = new Tracer({ ...st.trace, domain, maxCurves: 30, seedCount: 80, maxSteps: 120, inside: null }, ev).runAll();
+    ok('a null volume traces identically', a.length === b.length && a[0].n === b[0].n);
+  }
+}
+
+// ---------------------------------------------------------------- depth sorting
+section('depth sorting');
+{
+  // Curves must come out of buildMesh with index ranges that tile the index
+  // buffer exactly, or reordering them would drop or duplicate triangles.
+  const curves = [];
+  for (let c = 0; c < 5; c++) {
+    const n = 20 + c * 3;
+    const o = { n, pts: new Float32Array(n * 3), speed: new Float32Array(n) };
+    for (let i = 0; i < n; i++) {
+      o.pts[i * 3] = Math.cos(i * 0.2) + c;
+      o.pts[i * 3 + 1] = Math.sin(i * 0.2);
+      o.pts[i * 3 + 2] = i * 0.03 - c;
+      o.speed[i] = 1;
+    }
+    curves.push(o);
+  }
+  const grad = new Gradient(defaultState().color.gradient);
+
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    const opts = {
+      h: 0.02, geomMode, sides: 6, aspect: 1, width: 0.02, widthMode: 0, widthAmount: 0.5,
+      taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+    };
+    const chunks = buildMesh(prepareCurves(curves, opts, grad), opts);
+    let tiles = true, covered = 0, expected = 0, centroidsOk = true;
+    for (const c of chunks) {
+      expected += c.indexCount;
+      let cursor = 0;
+      for (const r of c.ranges) {
+        if (r.start !== cursor) tiles = false;
+        cursor += r.count;
+        covered += r.count;
+      }
+      if (cursor !== c.indexCount) tiles = false;
+      if (c.centroids.length !== c.ranges.length * 3) centroidsOk = false;
+      for (let i = 0; i < c.centroids.length; i++) if (!isFinite(c.centroids[i])) centroidsOk = false;
+    }
+    ok(`form ${geomMode}: ranges tile the index buffer`, tiles && covered === expected,
+      `covered ${covered} of ${expected}`);
+    ok(`form ${geomMode}: every range has a finite centroid`, centroidsOk);
+  }
+
+  // The reorder itself: same multiset of indices, far curves first.
+  {
+    const opts = {
+      h: 0.02, geomMode: 0, sides: 6, aspect: 1, width: 0.02, widthMode: 0, widthAmount: 0.5,
+      taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+    };
+    const c = buildMesh(prepareCurves(curves, opts, grad), opts)[0];
+    const viewDir = [1, 0, 0];
+    const order = c.ranges.map((_, i) => i);
+    const depth = order.map((i) => c.centroids[i * 3] * viewDir[0]
+      + c.centroids[i * 3 + 1] * viewDir[1] + c.centroids[i * 3 + 2] * viewDir[2]);
+    order.sort((a, b) => depth[a] - depth[b]);
+
+    const out = new Uint16Array(c.indices.length);
+    let w = 0;
+    for (const i of order) {
+      const r = c.ranges[i];
+      for (let k = 0; k < r.count; k++) out[w++] = c.indices[r.start + k];
+    }
+    ok('the reorder writes exactly one index buffer', w === c.indices.length);
+    const tally = (arr) => {
+      const m = new Map();
+      for (const v of arr) m.set(v, (m.get(v) || 0) + 1);
+      return m;
+    };
+    const a = tally(c.indices), b = tally(out);
+    let sameCounts = a.size === b.size;
+    for (const [k, v] of a) if (b.get(k) !== v) sameCounts = false;
+    ok('the reorder preserves every index', sameCounts);
+
+    let monotone = true;
+    for (let i = 1; i < order.length; i++) if (depth[order[i]] < depth[order[i - 1]]) monotone = false;
+    ok('curves come out far to near', monotone);
+  }
+}
+
+// ---------------------------------------------------------------- video
+section('video export');
+{
+  // MediaRecorder does not exist in node, so what can be checked here is the
+  // decision logic: that an unavailable format is reported rather than
+  // substituted, which is the failure that would hand someone a WebM named .mp4.
+  ok('no formats when MediaRecorder is missing', availableVideoFormats().length === 0);
+  ok('choosing returns nothing when nothing is available', chooseVideoFormat('auto') === null);
+  ok('an explicit format also returns nothing', chooseVideoFormat('mp4') === null);
+
+  const look = defaultState().look;
+  for (const key of ['videoFormat', 'videoSeconds', 'videoFps', 'videoTurns', 'videoFlowCycles', 'videoQuality']) {
+    ok(`state has look.${key}`, look[key] !== undefined);
+  }
+  ok('the default clip is a whole number of frames',
+    Number.isInteger(Math.round(look.videoSeconds * look.videoFps)));
+  ok('the default clip loops', Number.isInteger(look.videoTurns) || look.videoTurns % 0.25 === 0);
+  ok('depth sorting is on by default', look.sortDepth === true);
 }
 
 // ---------------------------------------------------------------- material and texture

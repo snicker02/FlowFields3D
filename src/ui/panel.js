@@ -5,6 +5,7 @@
 import { FIELDS, SYMMETRIES } from '../engine/fields.js';
 import { FOLD_MODES } from '../engine/fractal.js';
 import { EXPORT_SIZES } from '../io/exporters.js';
+import { VOLUME_SHAPES } from '../engine/volume.js';
 import { SEED_MODES } from '../engine/integrator.js';
 import { GEOM_MODES, WIDTH_MODES, COLOR_MODES } from '../engine/geometry.js';
 
@@ -33,6 +34,16 @@ export const SCHEMA = [
       { type: 'slider', path: 'field.drift', label: 'Global drift Z', min: -2, max: 2, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.time', label: 'Time', min: 0, max: 20, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.noiseSeed', label: 'Noise seed', min: 1, max: 9999, step: 1, level: 'trace' },
+    ],
+  },
+  {
+    title: 'Volume', open: false, controls: [
+      { type: 'select', path: 'field.volume.shape', label: 'Confine to', options: VOLUME_SHAPES, level: 'trace' },
+      { type: 'slider', path: 'field.volume.size', label: 'Size', min: 0.1, max: 1.6, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.volume.thickness', label: 'Thickness', min: 0.01, max: 0.6, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.volume.round', label: 'Corner rounding', min: 0, max: 0.5, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.volume.frequency', label: 'Lattice frequency', min: 1, max: 12, step: 0.05, level: 'trace' },
+      { type: 'toggle', path: 'field.volume.invert', label: 'Flow outside instead', level: 'trace' },
     ],
   },
   {
@@ -131,6 +142,7 @@ export const SCHEMA = [
   {
     title: 'Material and texture', open: false, controls: [
       { type: 'select', path: 'look.material', label: 'Material', options: ['Satin', 'Mirror', 'Glass'], level: 'none' },
+      { type: 'toggle', path: 'look.sortDepth', label: 'Depth sort transparency', level: 'none' },
       { type: 'select', path: 'look.texMode', label: 'Texture', options: ['None', 'Cross bands', 'Lengthwise stripes', 'Checker', 'Weave', 'Dots', 'Grain', 'Diagonal hatch'], level: 'none' },
       { type: 'slider', path: 'look.texScale', label: 'Repeats along', min: 1, max: 120, step: 1, level: 'none' },
       { type: 'slider', path: 'look.texRepeat', label: 'Repeats across', min: 1, max: 16, step: 1, level: 'none' },
@@ -144,6 +156,24 @@ export const SCHEMA = [
       { type: 'slider', path: 'look.exportWidth', label: 'Custom width', min: 256, max: 20000, step: 16, level: 'none' },
       { type: 'slider', path: 'look.exportHeight', label: 'Custom height', min: 256, max: 20000, step: 16, level: 'none' },
       { type: 'slider', path: 'look.supersample', label: 'Supersample', min: 1, max: 4, step: 1, level: 'none' },
+    ],
+  },
+  {
+    title: 'Video', open: false, controls: [
+      {
+        type: 'select', path: 'look.videoFormat', label: 'Format', level: 'none',
+        options: [
+          { value: 'auto', label: 'Auto' },
+          { value: 'mp4', label: 'MP4 (H.264)' },
+          { value: 'webm-vp9', label: 'WebM (VP9)' },
+          { value: 'webm-vp8', label: 'WebM (VP8)' },
+        ],
+      },
+      { type: 'slider', path: 'look.videoSeconds', label: 'Seconds', min: 1, max: 60, step: 1, level: 'none' },
+      { type: 'slider', path: 'look.videoFps', label: 'Frames per second', min: 12, max: 60, step: 1, level: 'none' },
+      { type: 'slider', path: 'look.videoTurns', label: 'Camera turns', min: 0, max: 4, step: 0.25, level: 'none' },
+      { type: 'slider', path: 'look.videoFlowCycles', label: 'Flow cycles', min: 0, max: 12, step: 0.5, level: 'none' },
+      { type: 'slider', path: 'look.videoQuality', label: 'Bitrate (Mbit/s)', min: 2, max: 60, step: 1, level: 'none' },
     ],
   },
   {

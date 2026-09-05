@@ -35,6 +35,10 @@ export class OrbitCamera {
       mat4Perspective((this.fov * Math.PI) / 180, aspect, this.near, this.far, this.proj);
     }
     mat4LookAt(this.eye, this.target, this.up, this.view);
+    // World-space forward, for depth sorting.
+    const fx = this.target[0] - this.eye[0], fy = this.target[1] - this.eye[1], fz = this.target[2] - this.eye[2];
+    const fl = Math.hypot(fx, fy, fz) || 1;
+    this.viewDir = [fx / fl, fy / fl, fz / fl];
     mat4Multiply(this.proj, this.view, this.mvp);
     mat3FromMat4(this.view, this.normalMat);
     return this;

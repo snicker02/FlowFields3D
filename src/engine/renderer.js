@@ -87,6 +87,14 @@ export class Renderer {
         idx: mk(c.indices, gl.ELEMENT_ARRAY_BUFFER),
         count: c.indexCount,
         mode: c.mode,
+        // Kept on the CPU so transparent draws can reorder the curves back to
+        // front without rebuilding the geometry.
+        srcIndices: c.indices,
+        ranges: c.ranges || [],
+        centroids: c.centroids || new Float32Array(0),
+        scratch: null,
+        order: null,
+        sortKey: '',
       });
       this.stats.vertices += c.vertexCount;
       this.stats.indices += c.indexCount;
@@ -138,6 +146,9 @@ export class Renderer {
     // when opacity is 1. Without sorted geometry the ordering is approximate;
     // leaving the depth buffer read-only is what keeps it from looking wrong.
     const glass = style.renderMode === 0 && (style.material | 0) === 2;
+    // Sorting only matters where the result depends on draw order.
+    const needsSort = !!style.sortDepth && !!look.viewDir
+      && (glass || additive || style.opacity < 0.999);
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
@@ -178,6 +189,8 @@ export class Renderer {
     gl.uniform1f(u.uTexAmount, style.texAmount);
     gl.uniform1f(u.uTexSoft, style.texSoft);
 
+    if (needsSort) this.sortForView(look.viewDir);
+
     for (const b of this.buffers) {
       bind(gl, b.pos, this.attr.pos, 3);
       bind(gl, b.nor, this.attr.nor, 3);
@@ -191,6 +204,42 @@ export class Renderer {
     gl.depthMask(true);
   }
 }
+
+/**
+ * Reorder each chunk's indices so its curves are drawn far to near. Curves are
+ * sorted, not triangles: a per-triangle sort is the correct answer and far too
+ * slow to do every frame, while leaving the order alone makes overlapping glass
+ * ribbons pick a winner arbitrarily. Sorting whole curves fixes the case that
+ * actually shows — one ribbon in front of another — and leaves the
+ * self-overlap of a single curve to the depth buffer.
+ */
+Renderer.prototype.sortForView = function sortForView(viewDir) {
+  const gl = this.gl;
+  // Quantised so a slow orbit does not rebuild the buffers every frame.
+  const key = `${viewDir[0].toFixed(2)},${viewDir[1].toFixed(2)},${viewDir[2].toFixed(2)}`;
+  for (const b of this.buffers) {
+    if (!b.ranges.length || b.sortKey === key) continue;
+    b.sortKey = key;
+    if (!b.order) b.order = b.ranges.map((_, i) => i);
+    if (!b.scratch) b.scratch = new Uint16Array(b.srcIndices.length);
+
+    const c = b.centroids;
+    const depth = new Float32Array(b.ranges.length);
+    for (let i = 0; i < b.ranges.length; i++) {
+      depth[i] = c[i * 3] * viewDir[0] + c[i * 3 + 1] * viewDir[1] + c[i * 3 + 2] * viewDir[2];
+    }
+    b.order.sort((a, d) => depth[a] - depth[d]);   // most negative (farthest) first
+
+    let w = 0;
+    const src = b.srcIndices, dst = b.scratch;
+    for (const i of b.order) {
+      const r = b.ranges[i];
+      for (let k = 0; k < r.count; k++) dst[w++] = src[r.start + k];
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
+    gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, dst);
+  }
+};
 
 function bind(gl, buf, loc, size) {
   if (loc < 0) return;

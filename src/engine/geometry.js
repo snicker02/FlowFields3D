@@ -243,6 +243,9 @@ class Chunk {
   constructor(mode) {
     this.mode = mode;
     this.positions = []; this.normals = []; this.colors = []; this.params = []; this.indices = [];
+    // One entry per curve: where its indices start, how many, and its centroid.
+    // Transparent draws reorder these back to front; opaque draws ignore them.
+    this.ranges = [];
   }
   get vertexCount() { return this.positions.length / 3; }
   freeze() {
@@ -253,6 +256,8 @@ class Chunk {
       colors: new Float32Array(this.colors),
       params: new Float32Array(this.params),
       indices: new Uint16Array(this.indices),
+      ranges: this.ranges,
+      centroids: new Float32Array(this.ranges.length * 3),
       vertexCount: this.positions.length / 3,
       indexCount: this.indices.length,
     };
@@ -275,6 +280,7 @@ export function buildMesh(prepared, opts) {
 
   for (const it of prepared.items) {
     const n = it.n;
+    const rangeStart = chunk.indices.length;
     if (chunk.vertexCount + n * vertsPerSample > MAX_VERTS && chunk.vertexCount > 0) {
       chunks.push(chunk.freeze());
       chunk = new Chunk(glMode);
@@ -353,8 +359,23 @@ export function buildMesh(prepared, opts) {
     } else {
       for (let i = 0; i < n - 1; i++) chunk.indices.push(base + i, base + i + 1);
     }
+
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < n; i++) { cx += pos[i * 3]; cy += pos[i * 3 + 1]; cz += pos[i * 3 + 2]; }
+    chunk.ranges.push({
+      start: rangeStart,
+      count: chunk.indices.length - rangeStart,
+      cx: cx / n, cy: cy / n, cz: cz / n,
+    });
   }
   if (chunk.vertexCount > 0) chunks.push(chunk.freeze());
+  for (const c of chunks) {
+    for (let i = 0; i < c.ranges.length; i++) {
+      c.centroids[i * 3] = c.ranges[i].cx;
+      c.centroids[i * 3 + 1] = c.ranges[i].cy;
+      c.centroids[i * 3 + 2] = c.ranges[i].cz;
+    }
+  }
   return chunks;
 }
 

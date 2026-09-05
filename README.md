@@ -135,6 +135,23 @@ draft budget and snaps back on release.
 The flow animation is a travelling highlight computed in the fragment shader, so
 it costs nothing per frame and never re-traces.
 
+## Confinement volumes
+
+A signed distance field decides where streamlines may exist: sphere, box,
+rounded box, cylinder, torus, capsule, octahedron, cone, and gyroid or Schwarz
+shells. Seeds outside are rejected, candidate seeds from the even-spacing pass
+are filtered, and a curve stops at the surface. Sizes are fractions of the field
+domain, so a volume means the same thing whichever field is loaded, and
+inverting gives the exact complement — flow around a shape rather than inside
+it.
+
+These are distance *estimates*, not exact distances. That is fine here: the
+tracer only ever asks for the sign. The tests confirm no sample of any traced
+curve sits outside its volume, for every shape.
+
+Thin shells reject most seeds, so seeding oversamples and retries rather than
+returning a nearly empty scene.
+
 ## Materials and texture
 
 Three materials. **Satin** is the original hemisphere-ambient shading.
@@ -151,8 +168,13 @@ world space (by multiplying the reflection vector on the *right* by the normal
 matrix, which transposes it) so the mirror stays put while you orbit, rather
 than sliding around like a matcap.
 
-Glass is blended without sorting the geometry, so the ordering is approximate.
-Depth writes are off, which is what keeps that from looking obviously wrong.
+Transparent draws — glass, additive, or any opacity below 1 — are sorted back
+to front by curve. Curves, not triangles: a per-triangle sort is the correct
+answer and far too slow per frame, while no sort at all lets overlapping glass
+ribbons pick a winner arbitrarily. Sorting whole curves fixes the case that
+actually shows, one ribbon in front of another, and leaves a single curve's
+self-overlap to the depth buffer. The sort key is quantised so a slow orbit does
+not rebuild index buffers every frame, and it can be switched off.
 
 Seven procedural textures — cross bands, lengthwise stripes, checker, weave,
 dots, grain, diagonal hatch — with controls for repeats along and across,
@@ -181,6 +203,21 @@ promise, and a hard step on a ribbon a few pixels wide aliases into noise.
 - **SVG** — projected vector output with painter ordering, perspective stroke
   width, depth fade, and colour-quantised pen layers carrying `inkscape:label`
 - **OBJ** — the extruded mesh
+- **Video** — a looping turntable, MP4 (H.264) or WebM (VP9/VP8), with controls
+  for length, frame rate, camera turns, flow cycles and bitrate. Frames are
+  stepped by hand through `captureStream(0)` and `requestFrame()` rather than
+  sampled off a wall clock, so one rendered frame becomes exactly one video
+  frame and a slow scene produces a smooth clip instead of a stuttering one. The
+  animation clock is the frame index, so the same settings give the same clip on
+  any machine, and a whole number of turns and cycles means the last frame lands
+  where the first began.
+
+  MP4 in MediaRecorder is recent and not universal — Chrome has it, Firefox does
+  not. Asking for a format the browser will not encode reports that and names
+  what it does offer, rather than quietly handing back a WebM with an .mp4
+  extension. Field evolution is not animated: changing `time` needs a full
+  retrace per frame, which is a frame-sequence job rather than a realtime one.
+
 - **JSON** — the full state, to reload later
 
 SVG and the shaded view are generated from the same prepared-curve stage, so
