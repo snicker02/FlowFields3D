@@ -38,6 +38,7 @@ export class Renderer {
     if (!gl) throw new Error('This browser could not create a WebGL context.');
     this.gl = gl;
     this.canvas = canvas;
+    this.texture = null;
 
     this.prog = link(gl, RIBBON_VS, RIBBON_FS, 'Ribbon');
     this.attr = {
@@ -51,7 +52,7 @@ export class Renderer {
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow']);
+      'uTravelCount', 'uTravelGlow', 'uTexImage', 'uTexHasImage']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -192,6 +193,12 @@ export class Renderer {
     gl.uniform1f(u.uTexRepeat, style.texRepeat);
     gl.uniform1f(u.uTexAmount, style.texAmount);
     gl.uniform1f(u.uTexSoft, style.texSoft);
+    gl.uniform1f(u.uTexHasImage, this.texture ? 1 : 0);
+    if (this.texture) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.uniform1i(u.uTexImage, 0);
+    }
     gl.uniform1f(u.uTravelMode, style.travelMode | 0);
     gl.uniform1f(u.uTravelLen, style.travelLength);
     gl.uniform1f(u.uTravelPhase, style.travelPhase);
@@ -224,6 +231,27 @@ export class Renderer {
  * actually shows — one ribbon in front of another — and leaves the
  * self-overlap of a single curve to the depth buffer.
  */
+/**
+ * Upload a drawable (canvas or image) as the ribbon texture. It must already be
+ * power-of-two: WebGL1 will not REPEAT or mipmap anything else, and most drivers
+ * express that by sampling black rather than by complaining.
+ */
+Renderer.prototype.setTexture = function setTexture(drawable) {
+  const gl = this.gl;
+  if (this.texture) { gl.deleteTexture(this.texture); this.texture = null; }
+  if (!drawable) return;
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, drawable);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  this.texture = tex;
+};
+
 Renderer.prototype.sortForView = function sortForView(viewDir) {
   const gl = this.gl;
   // Quantised so a slow orbit does not rebuild the buffers every frame.

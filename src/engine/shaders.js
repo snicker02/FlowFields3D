@@ -61,6 +61,8 @@ uniform float uTexScale;     // repeats along the curve
 uniform float uTexRepeat;    // repeats across the form
 uniform float uTexAmount;
 uniform float uTexSoft;
+uniform sampler2D uTexImage;
+uniform float uTexHasImage;
 uniform float uTravelMode;   // 0 off, 1 comet, 2 dashes, 3 wipe
 uniform float uTravelLen;    // fraction of the curve that is lit
 uniform float uTravelPhase;
@@ -135,7 +137,12 @@ void main() {
     alpha *= lit;
   }
 
-  if (uTexMode > 0.5 && uTexAmount > 0.001) {
+  if (uTexMode > 7.5 && uTexHasImage > 0.5 && uTexAmount > 0.001) {
+    // A loaded image, wrapped along and across the ribbon.
+    vec2 uv = vec2(vParam.x * uTexScale + vParam.y * 3.7, vParam.z * uTexRepeat);
+    vec3 tex = texture2D(uTexImage, uv).rgb;
+    base = mix(base, base * tex * 2.0, uTexAmount);
+  } else if (uTexMode > 0.5 && uTexMode < 7.5 && uTexAmount > 0.001) {
     // The per-curve random offsets the pattern so neighbouring ribbons do not
     // line up into a single sheet.
     float u = vParam.x * uTexScale + vParam.y * 3.7;

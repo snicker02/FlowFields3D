@@ -34,6 +34,18 @@ export function defaultState() {
         gain: 0.5,
         octaveSpin: 37,
       },
+      image: {
+        enabled: false,       // becomes usable once an image is loaded
+        projection: 0,        // see PROJECTIONS
+        scale: 0.9,           // fraction of the domain the image spans
+        offsetU: 0,
+        offsetV: 0,
+        contrast: 0,
+        gamma: 1,
+        invert: false,
+        seedPower: 1.5,       // how hard luminance biases where seeds land
+        seedFloor: 0.05,      // dark areas never go completely empty
+      },
       volume: {
         shape: 0,             // see VOLUME_SHAPES
         size: 0.75,           // fraction of the domain

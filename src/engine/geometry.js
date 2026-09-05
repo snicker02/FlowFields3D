@@ -14,9 +14,9 @@
 import { Noise } from './noise.js';
 
 export const GEOM_MODES = ['Ribbon', 'Tube', 'Line', 'Box'];
-export const WIDTH_MODES = ['Constant', 'Taper', 'By speed', 'By curvature', 'Random per curve', 'Ramp', 'Noise'];
+export const WIDTH_MODES = ['Constant', 'Taper', 'By speed', 'By curvature', 'Random per curve', 'Ramp', 'Noise', 'By image'];
 export const COLOR_MODES = ['Along curve', 'Curve index', 'Speed', 'Curvature', 'Height (Y)', 'Depth (Z)',
-  'Radius', 'Direction', 'Random per curve'];
+  'Radius', 'Direction', 'Random per curve', 'Image luminance'];
 
 const MAX_VERTS = 60000;               // stays inside the WebGL1 16-bit index limit
 const auxNoise = new Noise(9173);
@@ -159,6 +159,7 @@ export function analyse(curves, h) {
  *         smoothIters, smoothStrength, colorMode, colorCycles, colorReverse }
  */
 export function prepareCurves(curves, opts, gradient) {
+  const imageAt = opts.imageAt || null;
   const fit = fitTransform(curves);
   const { center, scale } = fit;
   const stats = analyse(curves, opts.h);
@@ -189,6 +190,9 @@ export function prepareCurves(curves, opts, gradient) {
       const s = n > 1 ? i / (n - 1) : 0;
       const px = pos[i3], py = pos[i3 + 1], pz = pos[i3 + 2];
       const spN = clamp01((c.speed[i] - stats.speedMin) / (stats.speedMax - stats.speedMin));
+      // Sampled from the fitted position, so the image frames what you see
+      // rather than the raw field coordinates.
+      const imN = imageAt ? clamp01(imageAt(px, py, pz)) : 0.5;
       const cuN = clamp01((curv[i] * scale - stats.curvMin) / (stats.curvMax - stats.curvMin));
 
       let w = opts.width;
@@ -199,6 +203,7 @@ export function prepareCurves(curves, opts, gradient) {
         case 4: w *= 1 + opts.widthAmount * (c.rnd * 2 - 1); break;
         case 5: w *= 1 + opts.widthAmount * (s * 2 - 1); break;
         case 6: w *= 1 + opts.widthAmount * auxNoise.noise3(px * 2.5, py * 2.5, pz * 2.5 + ci * 0.7); break;
+        case 7: w *= 1 + opts.widthAmount * (imN * 2 - 1); break;
         default: break;
       }
       wid[i] = Math.max(w, 1e-6);
@@ -223,6 +228,7 @@ export function prepareCurves(curves, opts, gradient) {
         case 6: ct = Math.min(1, Math.hypot(px, py, pz)); break;
         case 7: ct = Math.atan2(tan[i3 + 1], tan[i3]) / (Math.PI * 2) + 0.5 + tan[i3 + 2] * 0.25; break;
         case 8: ct = c.rnd; break;
+        case 9: ct = imN; break;
         default: ct = s;
       }
       ct *= opts.colorCycles;

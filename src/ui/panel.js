@@ -6,6 +6,7 @@ import { FIELDS, SYMMETRIES } from '../engine/fields.js';
 import { FOLD_MODES } from '../engine/fractal.js';
 import { EXPORT_SIZES } from '../io/exporters.js';
 import { VOLUME_SHAPES } from '../engine/volume.js';
+import { PROJECTIONS } from '../engine/image.js';
 import { SEED_MODES } from '../engine/integrator.js';
 import { GEOM_MODES, WIDTH_MODES, COLOR_MODES } from '../engine/geometry.js';
 
@@ -34,6 +35,20 @@ export const SCHEMA = [
       { type: 'slider', path: 'field.drift', label: 'Global drift Z', min: -2, max: 2, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.time', label: 'Time', min: 0, max: 20, step: 0.01, level: 'trace' },
       { type: 'slider', path: 'field.noiseSeed', label: 'Noise seed', min: 1, max: 9999, step: 1, level: 'trace' },
+    ],
+  },
+  {
+    title: 'Image', open: false, controls: [
+      { type: 'toggle', path: 'field.image.enabled', label: 'Use the loaded image', level: 'trace' },
+      { type: 'select', path: 'field.image.projection', label: 'Projection', options: PROJECTIONS, level: 'trace' },
+      { type: 'slider', path: 'field.image.scale', label: 'Coverage', min: 0.1, max: 3, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.image.offsetU', label: 'Offset across', min: -1, max: 1, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.image.offsetV', label: 'Offset down', min: -1, max: 1, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.image.contrast', label: 'Contrast', min: -0.3, max: 1, step: 0.005, level: 'trace' },
+      { type: 'slider', path: 'field.image.gamma', label: 'Gamma', min: 0.2, max: 3, step: 0.005, level: 'trace' },
+      { type: 'toggle', path: 'field.image.invert', label: 'Invert', level: 'trace' },
+      { type: 'slider', path: 'field.image.seedPower', label: 'Seed bias', min: 0, max: 4, step: 0.01, level: 'trace' },
+      { type: 'slider', path: 'field.image.seedFloor', label: 'Minimum density', min: 0, max: 1, step: 0.005, level: 'trace' },
     ],
   },
   {
@@ -143,7 +158,7 @@ export const SCHEMA = [
     title: 'Material and texture', open: false, controls: [
       { type: 'select', path: 'look.material', label: 'Material', options: ['Satin', 'Mirror', 'Glass'], level: 'none' },
       { type: 'toggle', path: 'look.sortDepth', label: 'Depth sort transparency', level: 'none' },
-      { type: 'select', path: 'look.texMode', label: 'Texture', options: ['None', 'Cross bands', 'Lengthwise stripes', 'Checker', 'Weave', 'Dots', 'Grain', 'Diagonal hatch'], level: 'none' },
+      { type: 'select', path: 'look.texMode', label: 'Texture', options: ['None', 'Cross bands', 'Lengthwise stripes', 'Checker', 'Weave', 'Dots', 'Grain', 'Diagonal hatch', 'Loaded image'], level: 'none' },
       { type: 'slider', path: 'look.texScale', label: 'Repeats along', min: 1, max: 120, step: 1, level: 'none' },
       { type: 'slider', path: 'look.texRepeat', label: 'Repeats across', min: 1, max: 16, step: 1, level: 'none' },
       { type: 'slider', path: 'look.texAmount', label: 'Texture depth', min: 0, max: 1, step: 0.005, level: 'none' },

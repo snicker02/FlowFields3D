@@ -148,6 +148,40 @@ What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather
 than a realtime one.
 
+## Images
+
+Load an image with the **Image** button. It is read once and used two ways.
+
+**As a field.** The image is projected into the volume — on a plane in XY, XZ or
+YZ, or wrapped spherically or cylindrically — and its luminance read back at any
+3D point. That scalar drives where seeds land (Seed bias), how wide a ribbon is
+(width mode "By image"), and where a sample sits on the gradient (colour mode
+"Image luminance"). This is the 3D counterpart of the image-driven density in
+the 2D plotter. Coverage, offset, contrast, gamma and invert frame it, and
+because coverage is a fraction of the domain, the same settings frame the same
+way whatever field is loaded.
+
+Seed weighting has a **minimum density** floor, and it matters: at zero, dark
+regions get no seeds at all, so the picture loses its darks entirely rather than
+rendering them sparsely. Acceptance is decided by hashing the seed position
+rather than by a running generator, so the same image gives the same seeds every
+trace instead of reshuffling on each rebuild.
+
+**As a texture.** Set Texture to "Loaded image" and it wraps along and across
+the ribbon. It is redrawn onto a power-of-two canvas first, because WebGL1 only
+wraps and mipmaps power-of-two textures and most drivers express that by
+sampling black rather than by complaining.
+
+## Undo
+
+Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y to redo. Sixty steps.
+
+Snapshots are serialised state rather than shallow copies — the state is nested,
+and a shared sub-object would let an edit reach back and rewrite its own
+history. Changes are coalesced on a short timer, so dragging a slider is one
+undo step rather than two hundred. Shuffle, presets and loading a file all push
+a step, which is the point: shuffle is meant to be pressed carelessly.
+
 ## Confinement volumes
 
 A signed distance field decides where streamlines may exist: sphere, box,

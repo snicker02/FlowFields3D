@@ -12,6 +12,7 @@ import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
 import { foldStepScale } from './engine/fractal.js';
 import { recordFrames, chooseVideoFormat, availableVideoFormats } from './io/recorder.js';
 import { makeVolume } from './engine/volume.js';
+import { ImageSource, makeImageField, toPowerOfTwoCanvas, readImageFile } from './engine/image.js';
 import { Tracer } from './engine/integrator.js';
 import { prepareCurves, buildMesh } from './engine/geometry.js';
 import { Gradient } from './engine/palette.js';
@@ -34,6 +35,10 @@ const app = {
   prepared: null,
   chunks: [],
   tracer: null,
+  image: null,          // ImageSource, once one is loaded
+  history: [],          // undo ring
+  future: [],           // redo stack
+  restoring: false,
   dirtyDraw: true,
   pendingTrace: false,
   pendingGeom: false,
@@ -63,9 +68,9 @@ function boot() {
 
   const panelRoot = el('panel');
   app.panel = new Panel(panelRoot, app.state, {
-    onChange: (level) => schedule(level),
+    onChange: (level) => { scheduleHistory(); schedule(level); },
     gradientMount: (mount) => {
-      app.gradientEditor = new GradientEditor(mount, app.gradient, () => schedule('geom'));
+      app.gradientEditor = new GradientEditor(mount, app.gradient, () => { scheduleHistory(); schedule('geom'); });
     },
   });
 
@@ -83,6 +88,7 @@ function boot() {
 
   console.log(`Flow Fields 3D — build ${BUILD}`);
   applyPreset(0);
+  pushHistory();                        // the state undo eventually returns to
   requestAnimationFrame(loop);
 }
 
@@ -104,6 +110,23 @@ function schedule(level) {
   }
 }
 
+/** The image as a scalar field, or null when there is nothing to read. */
+function imageField() {
+  return makeImageField(app.image, app.state.field.image, app.state.field.domain);
+}
+
+/**
+ * Seed weighting. The floor matters: at zero, dark regions get no seeds at all
+ * and the picture loses its darks entirely rather than rendering them sparsely.
+ */
+function imageSeedWeight() {
+  const cfg = app.state.field.image;
+  const f = imageField();
+  if (!f || cfg.seedPower <= 0) return null;
+  const floor = Math.max(0, Math.min(1, cfg.seedFloor));
+  return (x, y, z) => floor + (1 - floor) * Math.pow(f(x, y, z), cfg.seedPower);
+}
+
 function traceConfig() {
   const s = app.state;
   const scale = app.draft ? 0.3 : 1;
@@ -117,6 +140,7 @@ function traceConfig() {
     // constant instead of letting the detail slip between steps.
     stepFrac: s.trace.stepFrac / foldStepScale(s.field.fractal),
     inside: makeVolume(s.field.volume, s.field.domain),
+    seedWeight: imageSeedWeight(),
   };
 }
 
@@ -167,6 +191,7 @@ function rebuildGeometry() {
     colorMode: s.color.colorMode,
     colorCycles: s.color.colorCycles,
     colorReverse: s.color.colorReverse,
+    imageAt: imageField(),
   };
   app.prepared = prepareCurves(app.curves, opts, app.gradient);
   app.chunks = buildMesh(app.prepared, s.geom);
@@ -238,6 +263,64 @@ function syncCameraFromState() {
   app.dirtyDraw = true;
 }
 
+const HISTORY_LIMIT = 60;
+let historyTimer = 0;
+
+/**
+ * Coalesce a slider drag into one undo step. Without this, dragging a slider
+ * fills the whole ring with near-identical states and undo becomes useless.
+ */
+function scheduleHistory() {
+  if (app.restoring) return;
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(pushHistory, 450);
+}
+
+/**
+ * Push the current state onto the undo ring. Snapshots are JSON, which is small
+ * enough at this size and immune to the aliasing bugs a shallow copy would give
+ * — the state is nested, and a shared sub-object would let undo mutate its own
+ * history.
+ */
+function pushHistory() {
+  if (app.restoring) return;
+  const snap = stateToJSON(app.state);
+  if (app.history.length && app.history[app.history.length - 1] === snap) return;
+  app.history.push(snap);
+  if (app.history.length > HISTORY_LIMIT) app.history.shift();
+  app.future.length = 0;
+}
+
+function applyState(patch, message) {
+  app.restoring = true;
+  try {
+    app.state = reconcileFieldParams(mergeState(defaultState(), patch));
+    app.gradient = new Gradient(app.state.color.gradient);
+    app.panel.state = app.state;
+    app.panel.refresh();
+    if (app.gradientEditor) { app.gradientEditor.gradient = app.gradient; app.gradientEditor.refresh(); }
+    syncCameraFromState();
+    schedule('trace');
+    if (message) setStatus(message);
+  } finally {
+    app.restoring = false;
+  }
+}
+
+function undo() {
+  if (app.history.length < 2) { setStatus('Nothing to undo.'); return; }
+  app.future.push(app.history.pop());
+  applyState(parseStateJSON(app.history[app.history.length - 1]),
+    `Undone — ${app.history.length - 1} step${app.history.length === 2 ? '' : 's'} back available`);
+}
+
+function redo() {
+  if (!app.future.length) { setStatus('Nothing to redo.'); return; }
+  const snap = app.future.pop();
+  app.history.push(snap);
+  applyState(parseStateJSON(snap), 'Redone');
+}
+
 function setStatus(text) { statusEl.textContent = text; }
 
 function setProgress(frac) {
@@ -275,6 +358,27 @@ function buildToolbar() {
   });
   el('svg').addEventListener('click', saveSVG);
   el('video').addEventListener('click', saveVideo);
+
+  el('image').addEventListener('click', () => el('imagefile').click());
+  el('imagefile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setStatus(`Reading ${file.name}...`);
+      const loaded = await readImageFile(file);
+      app.image = new ImageSource(loaded.data, loaded.name);
+      app.renderer.setTexture(toPowerOfTwoCanvas(loaded.element));
+      app.state.field.image.enabled = true;
+      app.panel.refresh();
+      pushHistory();
+      schedule('trace');
+      setStatus(`Loaded ${loaded.name} (${loaded.data.width} x ${loaded.data.height} sampled)`
+        + ' — set Seed bias, or pick "Image luminance" for colour, "By image" for width, "Loaded image" for texture.');
+    } catch (err) {
+      setStatus(`That image could not be loaded: ${err.message}`);
+    }
+  });
   el('save').addEventListener('click', () => {
     app.state.color.gradient = app.gradient.toJSON();
     downloadBlob(new Blob([stateToJSON(app.state)], { type: 'application/json' }), `flowfield-${stamp()}.json`);
@@ -285,6 +389,7 @@ function buildToolbar() {
     file.text().then((txt) => {
       try {
         const patch = parseStateJSON(txt);
+        pushHistory();
         app.state = reconcileFieldParams(mergeState(defaultState(), patch));
         app.gradient = new Gradient(app.state.color.gradient);
         app.panel.state = app.state;
@@ -304,6 +409,7 @@ function buildToolbar() {
 }
 
 function applyPreset(i) {
+  scheduleHistory();
   const p = PRESETS[i];
   if (!p) return;
   app.state = reconcileFieldParams(mergeState(defaultState(), p.patch));
@@ -316,6 +422,7 @@ function applyPreset(i) {
 }
 
 function shuffle() {
+  scheduleHistory();
   const s = app.state;
   const r = (a, b) => a + Math.random() * (b - a);
   s.trace.seed = Math.floor(Math.random() * 1e8);
@@ -353,8 +460,13 @@ function setPanelHidden(hidden) {
 }
 
 function onKey(e) {
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  // Checked before the modifier guard below, since these are the one pair of
+  // shortcuts that are *supposed* to arrive with ctrl or cmd held.
+  if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
 
   // h is deliberately not gated on where the focus is: it is the way out of a
   // hidden panel, so it has to work from anywhere. No control here takes typed

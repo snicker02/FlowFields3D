@@ -143,7 +143,12 @@ export class Tracer {
     // are oversampled first, because rejection throws most of them away when
     // the volume is a thin shell.
     this.inside = cfg.inside || null;
+    // Image-weighted seeding. A seed is kept with probability equal to the
+    // image value raised to a power, using a hash of the position rather than a
+    // running generator so the same seed set comes back every trace.
+    this.seedWeight = cfg.seedWeight || null;
     let seeds = makeSeeds(cfg.seedMode, cfg.seedCount, R, cfg.seed, cfg.jitter);
+    if (this.seedWeight) seeds = seeds.filter((s2) => this._weighted(s2));
     if (this.inside) {
       const kept = seeds.filter((s2) => this.inside(s2[0], s2[1], s2[2]));
       let tries = 0;
@@ -151,6 +156,7 @@ export class Tracer {
         const more = makeSeeds(cfg.seedMode, cfg.seedCount, R, (cfg.seed | 0) + tries * 7919, cfg.jitter);
         for (const s2 of more) {
           if (kept.length >= cfg.seedCount) break;
+          if (this.seedWeight && !this._weighted(s2)) continue;
           if (this.inside(s2[0], s2[1], s2[2])) kept.push(s2);
         }
       }
@@ -255,6 +261,20 @@ export class Tracer {
 
   /** Jobard–Lefebvre candidate seeding, generalised to 3D: offset perpendicular
    *  to the tangent in six directions around the curve. */
+  /** Deterministic accept/reject against the weighting field. */
+  _weighted(p) {
+    const w = this.seedWeight(p[0], p[1], p[2]);
+    if (w >= 1) return true;
+    if (w <= 0) return false;
+    // Hash the position: a running PRNG would give different seeds depending on
+    // how many candidates happened to be tested before this one.
+    let h = Math.imul(Math.round(p[0] * 8191) ^ 0x9e3779b9, 0x85ebca6b);
+    h = Math.imul(h ^ Math.round(p[1] * 8191), 0xc2b2ae35);
+    h = Math.imul(h ^ Math.round(p[2] * 8191), 0x27d4eb2f);
+    h ^= h >>> 15;
+    return ((h >>> 8) & 0xffff) / 65536 < w;
+  }
+
   _spawnCandidates(curve) {
     const stride = Math.max(1, Math.round(this.dSep / this.h));
     const p = curve.pts;
@@ -278,6 +298,7 @@ export class Tracer {
       for (const dv of dirs) {
         const cx = p[i * 3] + dv[0] * d, cy = p[i * 3 + 1] + dv[1] * d, cz = p[i * 3 + 2] + dv[2] * d;
         if (this.inside && !this.inside(cx, cy, cz)) continue;
+        if (this.seedWeight && !this._weighted([cx, cy, cz])) continue;
         this.queue.push([cx, cy, cz]);
       }
     }

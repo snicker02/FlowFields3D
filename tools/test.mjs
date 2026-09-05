@@ -19,6 +19,8 @@ import { chunksToOBJ, preparedToSVG, EXPORT_SIZES, resolveExportSize } from '../
 import { RIBBON_VS, RIBBON_FS } from '../src/engine/shaders.js';
 import { makeVolume, VOLUME_SHAPES } from '../src/engine/volume.js';
 import { chooseVideoFormat, availableVideoFormats } from '../src/io/recorder.js';
+import { ImageSource, makeImageField, project, PROJECTIONS } from '../src/engine/image.js';
+import { stateToJSON, parseStateJSON } from '../src/io/exporters.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
 
 let pass = 0, fail = 0;
@@ -208,6 +210,217 @@ section('symmetry');
     }
   }
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------- image field
+section('image field');
+{
+  // A synthetic 64x64 image: a horizontal luminance ramp with a bright square,
+  // so every read has a known answer.
+  const W = 64, H = 64;
+  const px = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const v = Math.round((x / (W - 1)) * 255);
+      px[i] = px[i + 1] = px[i + 2] = v;
+      px[i + 3] = 255;
+    }
+  }
+  const img = new ImageSource({ width: W, height: H, data: px }, 'ramp');
+
+  ok('luminance is stored per pixel', img.lum.length === W * H);
+  ok('the ramp reads dark at the left', img.at(0.01, 0.5) < 0.06, `${img.at(0.01, 0.5).toFixed(3)}`);
+  ok('the ramp reads bright at the right', img.at(0.99, 0.5) > 0.94, `${img.at(0.99, 0.5).toFixed(3)}`);
+  ok('the ramp is monotone across', img.at(0.25, 0.5) < img.at(0.5, 0.5) && img.at(0.5, 0.5) < img.at(0.75, 0.5));
+  ok('sampling wraps rather than breaking',
+    Math.abs(img.at(1.25, 0.5) - img.at(0.25, 0.5)) < 1e-6 && isFinite(img.at(-3.7, 9.2)));
+  ok('a flat image reads flat', (() => {
+    const flat = new Uint8ClampedArray(16 * 16 * 4).fill(128);
+    const f = new ImageSource({ width: 16, height: 16, data: flat });
+    return Math.abs(f.at(0.3, 0.7) - f.at(0.8, 0.2)) < 1e-6;
+  })());
+
+  // Projections must cover the coordinate square and stay finite everywhere,
+  // including on the axes where the spherical and cylindrical forms divide.
+  for (let m = 0; m < PROJECTIONS.length; m++) {
+    let finite = true, spread = { u: [1e9, -1e9], v: [1e9, -1e9] };
+    const probes = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, -1, -1], [0.3, -0.7, 1.1]];
+    for (const p of probes) {
+      const uv = project(m, p[0], p[1], p[2], 1.6, 0.9, 0, 0);
+      if (!isFinite(uv[0]) || !isFinite(uv[1])) finite = false;
+      spread.u[0] = Math.min(spread.u[0], uv[0]); spread.u[1] = Math.max(spread.u[1], uv[0]);
+      spread.v[0] = Math.min(spread.v[0], uv[1]); spread.v[1] = Math.max(spread.v[1], uv[1]);
+    }
+    ok(`${PROJECTIONS[m]}: finite everywhere, poles included`, finite);
+    ok(`${PROJECTIONS[m]}: actually varies`, spread.u[1] - spread.u[0] > 0.05 || spread.v[1] - spread.v[0] > 0.05);
+  }
+
+  // The field wrapper
+  const base = { enabled: true, projection: 0, scale: 0.9, offsetU: 0, offsetV: 0, contrast: 0, gamma: 1, invert: false };
+  ok('a disabled image field is null', makeImageField(img, { ...base, enabled: false }, 1.6) === null);
+  ok('no image means no field', makeImageField(null, base, 1.6) === null);
+
+  const f = makeImageField(img, base, 1.6);
+  const fInv = makeImageField(img, { ...base, invert: true }, 1.6);
+  let inverts = true, bounded = true;
+  for (let i = 0; i < 200; i++) {
+    const x = (mulberry32(i + 1)() * 2 - 1) * 1.6;
+    const y = (mulberry32(i + 11)() * 2 - 1) * 1.6;
+    const z = (mulberry32(i + 111)() * 2 - 1) * 1.6;
+    const a = f(x, y, z), b = fInv(x, y, z);
+    if (Math.abs(a + b - 1) > 1e-6) inverts = false;
+    if (!(a >= 0 && a <= 1)) bounded = false;
+  }
+  ok('the field stays in 0..1', bounded);
+  ok('inverting mirrors the field exactly', inverts);
+
+  // Gamma darkens, contrast pushes apart. Sampled where the ramp is mid grey.
+  const mid = makeImageField(img, base, 1.6)(0, 0, 0);
+  ok('gamma above 1 darkens', makeImageField(img, { ...base, gamma: 2 }, 1.6)(0, 0, 0) < mid + 1e-9);
+  ok('gamma below 1 lightens', makeImageField(img, { ...base, gamma: 0.5 }, 1.6)(0, 0, 0) > mid - 1e-9);
+  {
+    const plain = makeImageField(img, base, 1.6);
+    const hot = makeImageField(img, { ...base, contrast: 1 }, 1.6);
+    const bright = [1.0, 0, 0], dark = [-1.0, 0, 0];
+    const spreadPlain = plain(...bright) - plain(...dark);
+    const spreadHot = hot(...bright) - hot(...dark);
+    ok('contrast widens the range', spreadHot >= spreadPlain - 1e-9,
+      `${spreadPlain.toFixed(3)} -> ${spreadHot.toFixed(3)}`);
+  }
+
+  // Seeding: weighting must bias, not erase. This is the composition main.js
+  // builds, floor included.
+  {
+    const st = defaultState();
+    const ev = makeEvaluator({
+      fieldA: st.field.fieldA, paramsA: st.field.paramsA, fieldB: st.field.fieldB, paramsB: st.field.paramsB,
+      blend: 0, blendMode: 0, symmetry: 0, fractal: st.field.fractal,
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: st.field.domain,
+    }, { noise: new Noise(1337), noiseB: new Noise(7), time: 0 });
+
+    const field = makeImageField(img, base, st.field.domain);
+    const weight = (floor, power) => (x, y, z) => floor + (1 - floor) * Math.pow(field(x, y, z), power);
+
+    // Headroom above the curve cap, or every variant just saturates at the cap
+    // and the comparison measures nothing.
+    const cfg = { ...st.trace, domain: st.field.domain, even: false, maxCurves: 4000, seedCount: 600, maxSteps: 100 };
+    const plain = new Tracer(cfg, ev).runAll();
+    const biased = new Tracer({ ...cfg, seedWeight: weight(0.02, 6) }, ev).runAll();
+    ok('weighted seeding still produces curves', biased.length > 5, `${biased.length} curves`);
+    ok('weighted seeding thins the field', biased.length < plain.length,
+      `${biased.length} vs ${plain.length}`);
+
+    // Seeds should favour the bright half. The ramp is bright at +x.
+    const meanX = (cs) => cs.reduce((a, c) => a + c.pts[0], 0) / Math.max(1, cs.length);
+    ok('seeds move toward the bright side', meanX(biased) > meanX(plain),
+      `${meanX(plain).toFixed(3)} -> ${meanX(biased).toFixed(3)}`);
+
+    // A floor of zero would empty the darks completely; that is the point of it.
+    const noFloor = new Tracer({ ...cfg, seedWeight: weight(0, 6) }, ev).runAll();
+    const withFloor = new Tracer({ ...cfg, seedWeight: weight(0.6, 6) }, ev).runAll();
+    ok('the density floor keeps the darks populated', withFloor.length > noFloor.length,
+      `${noFloor.length} vs ${withFloor.length}`);
+
+    // Determinism: the same weighting must give the same seeds every trace, or
+    // every rebuild would reshuffle the picture.
+    const a = new Tracer({ ...cfg, seedWeight: weight(0.02, 6) }, ev).runAll();
+    const b = new Tracer({ ...cfg, seedWeight: weight(0.02, 6) }, ev).runAll();
+    ok('weighted seeding is deterministic',
+      a.length === b.length && a.every((c, i) => c.n === b[i].n && c.pts[0] === b[i].pts[0]));
+  }
+
+  // Image-driven width and colour must actually respond to the image.
+  {
+    const curves = [];
+    for (let c = 0; c < 3; c++) {
+      const n = 30;
+      const o = { n, pts: new Float32Array(n * 3), speed: new Float32Array(n) };
+      for (let i = 0; i < n; i++) {
+        o.pts[i * 3] = (i / (n - 1)) * 2 - 1;
+        o.pts[i * 3 + 1] = c * 0.2;
+        o.pts[i * 3 + 2] = 0;
+        o.speed[i] = 1;
+      }
+      curves.push(o);
+    }
+    const grad = new Gradient(defaultState().color.gradient);
+    const optsBase = {
+      h: 0.02, geomMode: 0, sides: 6, aspect: 1, width: 0.02, widthAmount: 0.9,
+      taperPower: 0.5, twist: 0, smoothIters: 0, colorCycles: 1, colorReverse: false,
+    };
+    const noImg = prepareCurves(curves, { ...optsBase, widthMode: 7, colorMode: 9 }, grad);
+    const withImg = prepareCurves(curves,
+      { ...optsBase, widthMode: 7, colorMode: 9, imageAt: makeImageField(img, base, 1.6) }, grad);
+
+    const widths = withImg.items[0].wid;
+    let varies = false;
+    for (let i = 1; i < widths.length; i++) if (Math.abs(widths[i] - widths[0]) > 1e-6) varies = true;
+    ok('image width mode varies along the curve', varies);
+    ok('image width mode stays positive', Array.from(widths).every((w) => w > 0));
+
+    let colourVaries = false;
+    const col = withImg.items[0].col;
+    for (let i = 3; i < col.length; i += 3) if (Math.abs(col[i] - col[0]) > 1e-6) colourVaries = true;
+    ok('image colour mode varies along the curve', colourVaries);
+
+    // With no image loaded these modes must fall back to something flat and
+    // finite rather than throwing or producing NaN.
+    ok('image modes survive with no image',
+      Array.from(noImg.items[0].wid).every((w) => w > 0 && isFinite(w))
+      && Array.from(noImg.items[0].col).every((c) => isFinite(c)));
+  }
+}
+
+// ---------------------------------------------------------------- undo
+section('undo history');
+{
+  // The undo ring stores serialised states. What matters is that a snapshot
+  // round-trips exactly and that restoring an old one cannot be corrupted by
+  // later edits — the bug a shallow copy would give.
+  const a = defaultState();
+  const snapA = stateToJSON(a);
+  a.geom.width = 0.5;
+  a.field.image.gamma = 2.5;
+  a.color.gradient = a.color.gradient.slice();
+  const snapB = stateToJSON(a);
+
+  ok('snapshots differ once the state changes', snapA !== snapB);
+
+  const restored = reconcileFieldParams(mergeState(defaultState(), parseStateJSON(snapA)));
+  ok('a snapshot round-trips', restored.geom.width === defaultState().geom.width,
+    `${restored.geom.width}`);
+  ok('restoring is not aliased to the live state', restored.field.image.gamma === defaultState().field.image.gamma);
+
+  a.geom.width = 0.9;
+  ok('later edits cannot reach an old snapshot',
+    reconcileFieldParams(mergeState(defaultState(), parseStateJSON(snapA))).geom.width === defaultState().geom.width);
+
+  // The ring itself: pushing past the limit drops the oldest, and a repeat push
+  // is ignored so an idle drag does not fill it with duplicates.
+  const LIMIT = 60;
+  const ring = [];
+  const push = (snap) => {
+    if (ring.length && ring[ring.length - 1] === snap) return;
+    ring.push(snap);
+    if (ring.length > LIMIT) ring.shift();
+  };
+  push(snapA); push(snapA); push(snapA);
+  ok('identical snapshots collapse to one', ring.length === 1);
+  for (let i = 0; i < 100; i++) push(`state-${i}`);
+  ok('the ring is bounded', ring.length === LIMIT, `${ring.length}`);
+  ok('the ring keeps the newest', ring[ring.length - 1] === 'state-99');
+  ok('the ring drops the oldest', !ring.includes('state-0'));
+
+  // Undo then redo must land back where it started.
+  const history = [snapA, snapB];
+  const future = [];
+  future.push(history.pop());
+  const afterUndo = history[history.length - 1];
+  history.push(future.pop());
+  ok('undo steps back one state', afterUndo === snapA);
+  ok('redo returns to where it was', history[history.length - 1] === snapB);
+  ok('redo is empty once consumed', future.length === 0);
 }
 
 // ---------------------------------------------------------------- volumes
