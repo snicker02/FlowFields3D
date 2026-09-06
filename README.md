@@ -48,21 +48,46 @@ of light settings and one ribbon width.
 
 ## Fields
 
-22 of them, each with its own parameters:
+26 of them, each with its own parameters:
 
 | Group | Fields |
 | --- | --- |
-| Noise | Curl noise, Curl noise on shells |
+| Noise | Curl noise, Curl noise on shells, Kraichnan turbulence, Image contours |
 | Analytic | ABC flow, Taylor–Green vortex, Helical shear, Double gyre |
 | Attractor | Lorenz, Rössler, Thomas, Aizawa, Halvorsen, Dadras, Chen–Lee, Sprott linz-F, Four-wing |
 | Topology | Hopf fibration, Vortex filaments, Spherical harmonic swirl, Inversive swirl |
-| Physical | Magnetic dipoles, Orbital wells |
-| Lattice | Minimal-surface flow (gyroid, Schwarz P, diamond, Neovius) |
+| Physical | Magnetic dipoles, Orbital wells, Toroidal flux surfaces |
+| Lattice | Minimal-surface flow (gyroid, Schwarz P, diamond, Neovius), Surface flow |
 
 Curl noise is the curl of an fBm vector potential, so it is divergence free and
 streamlines neither bunch up nor thin out. Vortex filaments evaluate a
 regularised Biot–Savart integral over rings, torus knots, helices, linked rings
 or a random tangle — it is the slowest field here and the one worth the wait.
+
+**Kraichnan turbulence** is a sum of random Fourier modes with every amplitude
+perpendicular to its own wavevector. That makes the divergence exactly zero by
+construction — ∇·(A cos(k·x)) = −(A·k) sin(k·x), which vanishes when A ⊥ k —
+rather than approximately zero via a curl taken by finite differences. Log-uniform
+wavenumbers give every octave the same mode count, and the spectral slope is a
+slider. Eddies nested at every scale, not noise smoothed at one frequency.
+
+**Toroidal flux surfaces** has no velocity component along the minor radius, so
+that radius is conserved and every streamline stays on its own torus. A rational
+ratio of toroidal to poloidal winding closes into a loop; an irrational one
+wanders the surface forever and fills it densely. One slider takes you from a few
+rings to a solid shell of thread, and the shear term varies the winding across
+the surfaces.
+
+**Surface flow** projects curl noise onto the tangent plane of a distance field
+so the streamlines hug a surface rather than filling the volume. The projection
+alone is not enough — integration error accumulates off the surface and the
+curves peel away — so a term proportional to the distance pulls them back. That
+is what "stick" is: at 0 the worst drift is 0.094, at 3 it is 0.034.
+
+**Image contours** samples a loaded picture's luminance, takes the gradient in a
+chosen plane and turns it 90°, so streamlines follow the contours of a
+photograph. Climbing the gradient instead runs straight up the brightness. With
+no image loaded it degrades to a plain drift rather than an error.
 
 A second field can be mixed in by interpolation, addition or **cross product**;
 the cross product makes streamlines run along the intersection of the two

@@ -186,4 +186,40 @@ export const PRESETS = [
       look: { renderMode: 0, ambient: 0.42, rim: 0.3, specular: 0.55, shininess: 48, fogDensity: 0.18 },
     },
   },
+  {
+    name: 'Kraichnan cascade',
+    patch: {
+      field: {
+        fieldA: 'kraichnan', paramsA: { modes: 56, kmin: 0.5, kmax: 11, slope: 0.833, seed: 3, sweep: 0.4 }, domain: 2.2,
+      },
+      trace: { even: true, dSepFrac: 0.038, maxCurves: 1100, seedCount: 1400, stepFrac: 0.008, maxSteps: 520, seedMode: 0, seedRadiusFrac: 0.85 },
+      geom: { geomMode: 0, width: 0.012, widthMode: 2, widthAmount: 0.7, taperPower: 0.5, twist: 0.5, smoothIters: 1 },
+      color: { colorMode: 2, colorCycles: 1, ...grad('Sea ice') },
+      look: { renderMode: 0, ambient: 0.55, rim: 0.42, fogDensity: 0.18 },
+    },
+  },
+  {
+    name: 'Flux rings',
+    patch: {
+      field: {
+        fieldA: 'tokamak', paramsA: { R: 0.9, toroidal: 1, poloidal: 0.32, shear: 0.6, tilt: 0 }, domain: 1.6,
+      },
+      trace: { even: false, seedMode: 1, seedCount: 420, maxCurves: 420, seedRadiusFrac: 0.8, stepFrac: 0.005, maxSteps: 1100, bidirectional: false },
+      geom: { geomMode: 1, sides: 5, aspect: 1, width: 0.006, widthMode: 0, twist: 0, smoothIters: 1 },
+      color: { colorMode: 6, colorCycles: 1, ...grad('Peacock') },
+      look: { renderMode: 0, ambient: 0.45, rim: 0.35, specular: 0.5, fogDensity: 0.2 },
+    },
+  },
+  {
+    name: 'Skin flow',
+    patch: {
+      field: {
+        fieldA: 'surface', paramsA: { shape: 8, size: 0.8, thickness: 0.22, frequency: 4, scale: 1.4, stick: 2.2, swirl: 0.5 }, domain: 1,
+      },
+      trace: { even: true, dSepFrac: 0.028, maxCurves: 1400, seedCount: 2000, stepFrac: 0.01, maxSteps: 460, seedMode: 2, seedRadiusFrac: 0.95 },
+      geom: { geomMode: 0, width: 0.009, widthMode: 1, taperPower: 0.6, twist: 0, smoothIters: 1 },
+      color: { colorMode: 4, colorCycles: 1, ...grad('Ember') },
+      look: { renderMode: 0, ambient: 0.5, rim: 0.5, specular: 0.35, fogDensity: 0.16 },
+    },
+  },
 ];

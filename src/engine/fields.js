@@ -12,6 +12,7 @@
 import { curlNoise, mulberry32 } from './noise.js';
 import { fractalFold, identity3, octaveRotations } from './fractal.js';
 import { cross, dot, normalize } from './vecmath.js';
+import { makeVolume, VOLUME_SHAPES } from './volume.js';
 
 const P_ = (id, label, def, min, max, step = 0.001) => ({ id, label, def, min, max, step });
 const CHOICE = (id, label, def, options) => ({ id, label, def, options, choice: true });
@@ -466,6 +467,213 @@ export const FIELDS = [
       return out;
     },
   },
+  {
+    id: 'kraichnan', name: 'Kraichnan turbulence', group: 'Noise', domain: 2.2,
+    params: [
+      P_('modes', 'Modes', 40, 4, 160, 1),
+      P_('kmin', 'Largest eddies', 0.6, 0.1, 4),
+      P_('kmax', 'Smallest eddies', 9, 1, 40),
+      P_('slope', 'Spectral slope', 0.833, 0, 2),
+      P_('seed', 'Seed', 3, 1, 999, 1),
+      P_('sweep', 'Sweep with time', 0.4, 0, 3),
+    ],
+    // A sum of random Fourier modes with every amplitude perpendicular to its
+    // own wavevector. That makes the divergence exactly zero by construction —
+    // grad . (A cos(k.x)) = -(A.k) sin(k.x), which vanishes when A is
+    // perpendicular to k — rather than approximately zero via a curl taken by
+    // finite differences. Real turbulence with a spectral cascade, not fBm
+    // wearing a curl.
+    prepare(P) {
+      const n = Math.max(1, P.modes | 0);
+      const rnd = mulberry32((P.seed | 0) * 7919 + 13);
+      const k = new Float64Array(n * 3);
+      const a = new Float64Array(n * 3);
+      const b = new Float64Array(n * 3);
+      const phase = new Float64Array(n);
+      const kmin = Math.min(P.kmin, P.kmax - 1e-3);
+      const logRange = Math.log(P.kmax / kmin);
+      for (let i = 0; i < n; i++) {
+        // Log-uniform wavenumbers so every octave gets the same mode count.
+        const mag = kmin * Math.exp(rnd() * logRange);
+        // A direction uniform on the sphere.
+        const u = rnd() * 2 - 1, th = rnd() * TAU, r = Math.sqrt(Math.max(0, 1 - u * u));
+        const kx = r * Math.cos(th), ky = u, kz = r * Math.sin(th);
+        k[i * 3] = kx * mag; k[i * 3 + 1] = ky * mag; k[i * 3 + 2] = kz * mag;
+
+        // Two amplitudes, both perpendicular to k, scaled by the spectrum.
+        const amp = Math.pow(mag, -P.slope);
+        let ex = 0, ey = 0, ez = 0;
+        if (Math.abs(kx) <= Math.abs(ky) && Math.abs(kx) <= Math.abs(kz)) { ex = 0; ey = -kz; ez = ky; }
+        else if (Math.abs(ky) <= Math.abs(kz)) { ex = -kz; ey = 0; ez = kx; }
+        else { ex = -ky; ey = kx; ez = 0; }
+        const el = Math.hypot(ex, ey, ez) || 1;
+        ex /= el; ey /= el; ez /= el;
+        const fx = (ky * ez - kz * ey), fy = (kz * ex - kx * ez), fz = (kx * ey - ky * ex);
+        const fl = Math.hypot(fx, fy, fz) || 1;
+        const t1 = rnd() * TAU, t2 = rnd() * TAU;
+        const c1 = Math.cos(t1) * amp, s1 = Math.sin(t1) * amp;
+        const c2 = Math.cos(t2) * amp, s2 = Math.sin(t2) * amp;
+        a[i * 3] = ex * c1 + (fx / fl) * s1;
+        a[i * 3 + 1] = ey * c1 + (fy / fl) * s1;
+        a[i * 3 + 2] = ez * c1 + (fz / fl) * s1;
+        b[i * 3] = ex * c2 + (fx / fl) * s2;
+        b[i * 3 + 1] = ey * c2 + (fy / fl) * s2;
+        b[i * 3 + 2] = ez * c2 + (fz / fl) * s2;
+        phase[i] = rnd() * TAU;
+      }
+      return { n, k, a, b, phase };
+    },
+    fn(x, y, z, P, ctx, out) {
+      const d = ctx.data;
+      const t = (ctx.time || 0) * P.sweep;
+      let vx = 0, vy = 0, vz = 0;
+      for (let i = 0; i < d.n; i++) {
+        const i3 = i * 3;
+        const kx = d.k[i3], ky = d.k[i3 + 1], kz = d.k[i3 + 2];
+        const arg = kx * x + ky * y + kz * z + d.phase[i] + t;
+        const c = Math.cos(arg), s = Math.sin(arg);
+        vx += d.a[i3] * c + d.b[i3] * s;
+        vy += d.a[i3 + 1] * c + d.b[i3 + 1] * s;
+        vz += d.a[i3 + 2] * c + d.b[i3 + 2] * s;
+      }
+      out[0] = vx; out[1] = vy; out[2] = vz;
+      return out;
+    },
+  },
+  {
+    id: 'tokamak', name: 'Toroidal flux surfaces', group: 'Physical', domain: 1.6,
+    params: [
+      P_('R', 'Major radius', 0.9, 0.2, 2),
+      P_('toroidal', 'Toroidal winding', 1, -3, 3),
+      P_('poloidal', 'Poloidal winding', 0.32, -3, 3),
+      P_('shear', 'Shear with radius', 0.6, -2, 2),
+      P_('tilt', 'Tilt', 0, -1, 1),
+    ],
+    // Nested flux surfaces. The velocity has no component along the minor
+    // radius, so that radius is conserved and every streamline stays on its own
+    // torus. A rational ratio of the two windings closes into a loop; an
+    // irrational one wanders the surface forever and fills it densely — one
+    // slider takes you from a few rings to a solid shell of thread.
+    fn(x, y, z, P, ctx, out) {
+      const rho = Math.hypot(x, z);
+      if (rho < 1e-9) { out[0] = 0; out[1] = 0; out[2] = 0; return out; }
+      const ex = x / rho, ez = z / rho;                 // outward, in the plane
+      const a = rho - P.R, b = y;                       // local minor coords
+      const minor = Math.hypot(a, b);
+
+      // Toroidal: around the main axis.
+      const tx = -ez, tz = ex;
+      // Poloidal: around the tube centre, which is (a, b) rotated by 90.
+      const px = -b * ex, py = a, pz = -b * ez;
+      const pl = Math.hypot(px, py, pz) || 1e-9;
+
+      // Magnetic shear: winding varies across the flux surfaces.
+      const q = P.poloidal * (1 + P.shear * minor);
+      out[0] = P.toroidal * tx + q * px / pl;
+      out[1] = q * py / pl + P.tilt * P.toroidal * ex * 0.5;
+      out[2] = P.toroidal * tz + q * pz / pl;
+      return out;
+    },
+  },
+  {
+    id: 'surface', name: 'Surface flow', group: 'Lattice', domain: 1,
+    params: [
+      CHOICE('shape', 'Surface', 1, VOLUME_SHAPES.slice(1)),
+      P_('size', 'Size', 0.75, 0.1, 1.5),
+      P_('thickness', 'Tube radius', 0.3, 0.02, 0.8),
+      P_('frequency', 'Lattice frequency', 4, 1, 12),
+      P_('scale', 'Flow scale', 1.1, 0.15, 6),
+      P_('stick', 'Stick to surface', 1.2, 0, 6),
+      P_('swirl', 'Swirl', 0.4, -2, 2),
+    ],
+    // Any flow, projected onto the tangent plane of a distance field, so the
+    // streamlines hug the surface instead of filling the volume. The projection
+    // alone is not enough: integration error accumulates off the surface and
+    // the curves peel away, so a term proportional to the distance pulls them
+    // back. That is what `stick` is, and at zero you can watch them drift.
+    prepare(P) {
+      const shape = (P.shape | 0) + 1;                  // the list omits 'None'
+      const v = makeVolume({
+        shape, size: P.size, thickness: P.thickness, round: 0.1,
+        frequency: P.frequency, invert: false,
+      }, 1);
+      return { sdf: v ? v.sdf : null };
+    },
+    fn(x, y, z, P, ctx, out) {
+      const sdf = ctx.data && ctx.data.sdf;
+      if (!sdf) { out[0] = 0; out[1] = 0; out[2] = 0; return out; }
+      const e = 1e-3;
+      const d = sdf(x, y, z);
+      const nx = (sdf(x + e, y, z) - sdf(x - e, y, z)) / (2 * e);
+      const ny = (sdf(x, y + e, z) - sdf(x, y - e, z)) / (2 * e);
+      const nz = (sdf(x, y, z + e) - sdf(x, y, z - e)) / (2 * e);
+      const nl = Math.hypot(nx, ny, nz) || 1e-9;
+      const ux = nx / nl, uy = ny / nl, uz = nz / nl;
+
+      curlNoise(ctx.noise, x, y, z, P.scale, 2, 0.5, tmpA);
+      let vx = tmpA[0], vy = tmpA[1], vz = tmpA[2];
+      if (P.swirl) {                                    // a twist about the normal
+        const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+        vx += cx * P.swirl; vy += cy * P.swirl; vz += cz * P.swirl;
+      }
+
+      const vn = vx * ux + vy * uy + vz * uz;
+      out[0] = vx - vn * ux - P.stick * d * ux;
+      out[1] = vy - vn * uy - P.stick * d * uy;
+      out[2] = vz - vn * uz - P.stick * d * uz;
+      return out;
+    },
+  },
+  {
+    id: 'imageflow', name: 'Image contours', group: 'Noise', domain: 1,
+    params: [
+      CHOICE('plane', 'Plane', 0, ['XY', 'XZ', 'YZ']),
+      P_('follow', 'Follow contours', 1, -1, 1),
+      P_('climb', 'Climb the gradient', 0, -1, 1),
+      P_('through', 'Drift through the plane', 0.15, -1, 1),
+      P_('step', 'Sampling step', 0.02, 0.002, 0.2),
+    ],
+    // Streamlines that follow the contours of a loaded picture: sample its
+    // luminance, take the gradient in the chosen plane, and turn it 90 degrees.
+    // Contour-following is the perpendicular; climbing the gradient runs
+    // straight up the brightness instead. With no image loaded this is a plain
+    // drift rather than an error.
+    fn(x, y, z, P, ctx, out) {
+      const img = ctx.image;
+      const plane = P.plane | 0;
+      const through = P.through;
+      if (!img) {
+        out[0] = plane === 2 ? through : 0;
+        out[1] = plane === 1 ? through : 0;
+        out[2] = plane === 0 ? through : 0;
+        return out;
+      }
+      const D = ctx.domain || 1;
+      const wx = x * D, wy = y * D, wz = z * D;
+      const e = P.step * D;
+      let g0, g1;
+      if (plane === 1) {                                 // XZ
+        g0 = (img(wx + e, wy, wz) - img(wx - e, wy, wz)) / (2 * e);
+        g1 = (img(wx, wy, wz + e) - img(wx, wy, wz - e)) / (2 * e);
+        out[0] = -g1 * P.follow + g0 * P.climb;
+        out[1] = through;
+        out[2] = g0 * P.follow + g1 * P.climb;
+      } else if (plane === 2) {                          // YZ
+        g0 = (img(wx, wy, wz + e) - img(wx, wy, wz - e)) / (2 * e);
+        g1 = (img(wx, wy + e, wz) - img(wx, wy - e, wz)) / (2 * e);
+        out[0] = through;
+        out[1] = g0 * P.follow + g1 * P.climb;
+        out[2] = -g1 * P.follow + g0 * P.climb;
+      } else {                                           // XY
+        g0 = (img(wx + e, wy, wz) - img(wx - e, wy, wz)) / (2 * e);
+        g1 = (img(wx, wy + e, wz) - img(wx, wy - e, wz)) / (2 * e);
+        out[0] = -g1 * P.follow + g0 * P.climb;
+        out[1] = g0 * P.follow + g1 * P.climb;
+        out[2] = through;
+      }
+      return out;
+    },
+  },
 ];
 
 export const FIELD_BY_ID = Object.fromEntries(FIELDS.map((f) => [f.id, f]));
@@ -566,8 +774,12 @@ export function makeEvaluator(cfg, ctx) {
   const fA = FIELD_BY_ID[cfg.fieldA] || FIELDS[0];
   const fB = FIELD_BY_ID[cfg.fieldB] || FIELDS[0];
   const PA = cfg.paramsA, PB = cfg.paramsB;
-  const ctxA = { noise: ctx.noise, time: ctx.time, data: fA.prepare ? fA.prepare(PA) : null };
-  const ctxB = { noise: ctx.noiseB, time: ctx.time, data: fB.prepare ? fB.prepare(PB) : null };
+  // `image` and `domain` are for the fields that read outside themselves: the
+  // image-gradient flow needs the loaded picture, and both it and the surface
+  // flow declare domain 1 so they can work in world units.
+  const shared = { time: ctx.time, image: ctx.image || null, domain: cfg.domain };
+  const ctxA = { ...shared, noise: ctx.noise, data: fA.prepare ? fA.prepare(PA) : null };
+  const ctxB = { ...shared, noise: ctx.noiseB, data: fB.prepare ? fB.prepare(PB) : null };
   const scaleA = cfg.domain / fA.domain;
   const scaleB = cfg.domain / fB.domain;
 

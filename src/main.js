@@ -150,6 +150,8 @@ function startTrace() {
     noise: new Noise(s.field.noiseSeed | 0),
     noiseB: new Noise(((s.field.noiseSeed | 0) * 2654435761) >>> 0 || 7),
     time: s.field.time,
+    // The image-contour field reads the loaded picture directly, in world units.
+    image: makeImageField(app.image, { ...s.field.image, enabled: !!app.image }, s.field.domain),
   };
   let evaluate;
   try {

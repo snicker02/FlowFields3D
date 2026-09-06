@@ -212,6 +212,214 @@ section('symmetry');
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
 }
 
+// ---------------------------------------------------------------- new fields
+section('new fields');
+{
+  const st = defaultState();
+  const evalFor = (id, params, extra = {}) => {
+    const f = FIELD_BY_ID[id];
+    return makeEvaluator({
+      fieldA: id, paramsA: { ...defaultParams(f), ...params },
+      fieldB: 'shear', paramsB: defaultParams(FIELD_BY_ID.shear),
+      blend: 0, blendMode: 0, symmetry: 0, fractal: { mode: 0, octaves: 1 },
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: f.domain, ...extra,
+    }, { noise: new Noise(1337), noiseB: new Noise(7), time: 0, ...extra.ctx });
+  };
+
+  // Kraichnan: the divergence is zero by construction, not by finite
+  // differences, so it should hold to far better than curl noise manages.
+  {
+    const ev = evalFor('kraichnan', { modes: 30 });
+    const o1 = [0, 0, 0], o2 = [0, 0, 0], o3 = [0, 0, 0];
+    let worst = 0, mag = 0, n = 0;
+    const k = 1e-4;
+    for (let i = 0; i < 200; i++) {
+      const q = [
+        (mulberry32(i + 3)() * 2 - 1) * 2,
+        (mulberry32(i + 33)() * 2 - 1) * 2,
+        (mulberry32(i + 333)() * 2 - 1) * 2,
+      ];
+      let div = 0;
+      for (let d = 0; d < 3; d++) {
+        const a = q.slice(), b = q.slice();
+        a[d] += k; b[d] -= k;
+        ev(a[0], a[1], a[2], o1); ev(b[0], b[1], b[2], o2);
+        div += (o1[d] - o2[d]) / (2 * k);
+      }
+      ev(q[0], q[1], q[2], o3);
+      mag += Math.hypot(o3[0], o3[1], o3[2]);
+      worst = Math.max(worst, Math.abs(div));
+      n++;
+    }
+    mag /= n;
+    ok('Kraichnan is divergence free by construction', worst < 1e-4 * Math.max(1, mag),
+      `worst |div| ${worst.toExponential(2)} vs mean |v| ${mag.toFixed(3)}`);
+    ok('Kraichnan is non-trivial', mag > 0.01, `mean |v| ${mag}`);
+
+    // More modes must not change the character, only the detail.
+    const few = evalFor('kraichnan', { modes: 8 });
+    const many = evalFor('kraichnan', { modes: 120 });
+    const a = [0, 0, 0], b = [0, 0, 0];
+    few(0.3, -0.5, 0.9, a); many(0.3, -0.5, 0.9, b);
+    ok('mode count stays finite at both ends',
+      a.every(isFinite) && b.every(isFinite) && Math.hypot(...b) > 0);
+
+    // Same seed, same field.
+    const s1 = evalFor('kraichnan', { seed: 12 }), s2 = evalFor('kraichnan', { seed: 12 });
+    const s3 = evalFor('kraichnan', { seed: 13 });
+    const p = [0.4, 0.2, -0.7];
+    const r1 = [0, 0, 0], r2 = [0, 0, 0], r3 = [0, 0, 0];
+    s1(...p, r1); s2(...p, r2); s3(...p, r3);
+    ok('the same seed gives the same turbulence', r1.every((v, i) => v === r2[i]));
+    ok('a different seed gives a different one', !r1.every((v, i) => v === r3[i]));
+  }
+
+  // Tokamak: the minor radius must be conserved, which is what makes the flux
+  // surfaces nested rather than a tangle.
+  {
+    const f = FIELD_BY_ID.tokamak;
+    const P = defaultParams(f);
+    const ev = evalFor('tokamak', {});
+    const minorOf = (x, y, z) => Math.hypot(Math.hypot(x, z) - P.R, y);
+    let worst = 0;
+    for (let i = 0; i < 40; i++) {
+      const a = mulberry32(i + 9)() * Math.PI * 2;
+      const th = mulberry32(i + 99)() * Math.PI * 2;
+      const minor = 0.1 + mulberry32(i + 999)() * 0.4;
+      let x = (P.R + minor * Math.cos(th)) * Math.cos(a);
+      let z = (P.R + minor * Math.cos(th)) * Math.sin(a);
+      let y = minor * Math.sin(th);
+      const start = minorOf(x, y, z);
+      const v = [0, 0, 0];
+      const h = 0.004;
+      for (let step = 0; step < 400; step++) {
+        ev(x, y, z, v);
+        const l = Math.hypot(v[0], v[1], v[2]) || 1e-9;
+        x += v[0] / l * h; y += v[1] / l * h; z += v[2] / l * h;
+      }
+      worst = Math.max(worst, Math.abs(minorOf(x, y, z) - start) / start);
+    }
+    ok('toroidal flow stays on its flux surface', worst < 0.05,
+      `worst drift ${(worst * 100).toFixed(2)}%`);
+  }
+
+  // Surface flow: `stick` is what keeps the curves on the surface. Without it
+  // they should visibly peel away, which is the check that it is doing work.
+  {
+    const f = FIELD_BY_ID.surface;
+    const P = defaultParams(f);
+    const vol = makeVolume({ shape: (P.shape | 0) + 1, size: P.size, thickness: P.thickness, round: 0.1, frequency: P.frequency, invert: false }, 1);
+    const walk = (stick) => {
+      const ev = evalFor('surface', { stick });
+      let worst = 0;
+      for (let i = 0; i < 12; i++) {
+        // Start on the surface: march down the gradient until the sign flips.
+        let x = (mulberry32(i + 4)() * 2 - 1) * 0.5;
+        let y = (mulberry32(i + 44)() * 2 - 1) * 0.5;
+        let z = (mulberry32(i + 444)() * 2 - 1) * 0.5;
+        for (let k = 0; k < 200; k++) {
+          const d = vol.sdf(x, y, z);
+          if (Math.abs(d) < 1e-4) break;
+          const e = 1e-4;
+          const gx = (vol.sdf(x + e, y, z) - vol.sdf(x - e, y, z)) / (2 * e);
+          const gy = (vol.sdf(x, y + e, z) - vol.sdf(x, y - e, z)) / (2 * e);
+          const gz = (vol.sdf(x, y, z + e) - vol.sdf(x, y, z - e)) / (2 * e);
+          const gl = Math.hypot(gx, gy, gz) || 1e-9;
+          x -= d * gx / gl; y -= d * gy / gl; z -= d * gz / gl;
+        }
+        const v = [0, 0, 0];
+        const h = 0.01;
+        for (let step = 0; step < 300; step++) {
+          ev(x, y, z, v);
+          const l = Math.hypot(v[0], v[1], v[2]) || 1e-9;
+          x += v[0] / l * h; y += v[1] / l * h; z += v[2] / l * h;
+          worst = Math.max(worst, Math.abs(vol.sdf(x, y, z)));
+        }
+      }
+      return worst;
+    };
+    const stuck = walk(3);
+    ok('surface flow stays on the surface', stuck < 0.05, `worst |distance| ${stuck.toFixed(4)}`);
+    ok('the stick term is doing the work', walk(0) > stuck, `${walk(0).toFixed(4)} vs ${stuck.toFixed(4)}`);
+  }
+
+  // Image contours: with follow only, the velocity must be perpendicular to the
+  // image gradient. That is the definition of a contour.
+  {
+    const W = 64, H = 64;
+    const px = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        // A radial blob, so the gradient points somewhere different everywhere.
+        const dx = x / W - 0.5, dy = y / H - 0.5;
+        const v = Math.round(255 * Math.exp(-(dx * dx + dy * dy) * 12));
+        px[i] = px[i + 1] = px[i + 2] = v;
+        px[i + 3] = 255;
+      }
+    }
+    const img = new ImageSource({ width: W, height: H, data: px });
+    const field = makeImageField(img, {
+      enabled: true, projection: 0, scale: 0.9, offsetU: 0, offsetV: 0,
+      contrast: 0, gamma: 1, invert: false,
+    }, 1);
+
+    const ev = makeEvaluator({
+      fieldA: 'imageflow', paramsA: { ...defaultParams(FIELD_BY_ID.imageflow), follow: 1, climb: 0, through: 0 },
+      fieldB: 'shear', paramsB: defaultParams(FIELD_BY_ID.shear),
+      blend: 0, blendMode: 0, symmetry: 0, fractal: { mode: 0, octaves: 1 },
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: 1,
+    }, { noise: new Noise(1), noiseB: new Noise(2), time: 0, image: field });
+
+    const v = [0, 0, 0];
+    let worstDot = 0, moved = 0;
+    const e = 0.02;
+    for (let i = 0; i < 100; i++) {
+      const x = (mulberry32(i + 6)() * 2 - 1) * 0.4;
+      const y = (mulberry32(i + 66)() * 2 - 1) * 0.4;
+      ev(x, y, 0, v);
+      const gx = (field(x + e, y, 0) - field(x - e, y, 0)) / (2 * e);
+      const gy = (field(x, y + e, 0) - field(x, y - e, 0)) / (2 * e);
+      const gl = Math.hypot(gx, gy), vl = Math.hypot(v[0], v[1]);
+      if (gl < 1e-6 || vl < 1e-9) continue;
+      moved++;
+      worstDot = Math.max(worstDot, Math.abs((v[0] * gx + v[1] * gy) / (gl * vl)));
+    }
+    ok('image contours run perpendicular to the gradient', moved > 20 && worstDot < 0.02,
+      `worst |cos| ${worstDot.toExponential(2)} over ${moved} points`);
+
+    // Climbing must do the opposite: parallel to the gradient.
+    const evClimb = makeEvaluator({
+      fieldA: 'imageflow', paramsA: { ...defaultParams(FIELD_BY_ID.imageflow), follow: 0, climb: 1, through: 0 },
+      fieldB: 'shear', paramsB: defaultParams(FIELD_BY_ID.shear),
+      blend: 0, blendMode: 0, symmetry: 0, fractal: { mode: 0, octaves: 1 },
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: 1,
+    }, { noise: new Noise(1), noiseB: new Noise(2), time: 0, image: field });
+    let worstPar = 1;
+    for (let i = 0; i < 100; i++) {
+      const x = (mulberry32(i + 6)() * 2 - 1) * 0.4;
+      const y = (mulberry32(i + 66)() * 2 - 1) * 0.4;
+      evClimb(x, y, 0, v);
+      const gx = (field(x + e, y, 0) - field(x - e, y, 0)) / (2 * e);
+      const gy = (field(x, y + e, 0) - field(x, y - e, 0)) / (2 * e);
+      const gl = Math.hypot(gx, gy), vl = Math.hypot(v[0], v[1]);
+      if (gl < 1e-6 || vl < 1e-9) continue;
+      worstPar = Math.min(worstPar, Math.abs((v[0] * gx + v[1] * gy) / (gl * vl)));
+    }
+    ok('climbing runs along the gradient', worstPar > 0.98, `worst |cos| ${worstPar.toFixed(4)}`);
+
+    // No image loaded must be a plain drift, not a crash or a stall.
+    const evNone = makeEvaluator({
+      fieldA: 'imageflow', paramsA: defaultParams(FIELD_BY_ID.imageflow),
+      fieldB: 'shear', paramsB: defaultParams(FIELD_BY_ID.shear),
+      blend: 0, blendMode: 0, symmetry: 0, fractal: { mode: 0, octaves: 1 },
+      warp: 0, warpScale: 1.2, swirl: 0, drift: 0, domain: 1,
+    }, { noise: new Noise(1), noiseB: new Noise(2), time: 0 });
+    evNone(0.2, 0.3, 0.1, v);
+    ok('image contours survive with no image', v.every(isFinite) && Math.hypot(...v) > 0);
+  }
+}
+
 // ---------------------------------------------------------------- image field
 section('image field');
 {
