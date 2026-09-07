@@ -165,9 +165,16 @@ along it is not a decoration: it is the motion the field describes. Controls for
 trail length, speed, dash count, per-curve stagger, tail softness and head glow.
 
 Both cost one uniform per frame, because the geometry never changes and nothing
-re-traces. Travel fades its tail, so it turns on blending and depth sorting the
-same way glass does, and discards fully dark fragments to keep the depth buffer
-clean.
+re-traces.
+
+Travel is a *cutout*, not a transparency: the window is fully opaque through its
+middle and the shader discards everything outside it, so only the tail edge is
+partial. That distinction turned out to matter. Treating travel like glass —
+giving up depth writes — meant a curve's own far side painted over its near side
+in index order, and per-curve sorting cannot help there, because the overlap is
+inside a single curve. On a coiled tube it showed as fine combing wherever the
+tube crossed itself. Travel now keeps depth writes on and blends only when the
+tail is soft; with softness at zero it needs no blending at all.
 
 What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather
