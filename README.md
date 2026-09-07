@@ -173,8 +173,18 @@ partial. That distinction turned out to matter. Treating travel like glass —
 giving up depth writes — meant a curve's own far side painted over its near side
 in index order, and per-curve sorting cannot help there, because the overlap is
 inside a single curve. On a coiled tube it showed as fine combing wherever the
-tube crossed itself. Travel now keeps depth writes on and blends only when the
-tail is soft; with softness at zero it needs no blending at all.
+tube crossed itself. Keeping depth writes on fixed that and revealed the other half of the problem:
+a half-transparent fringe that writes depth hides whatever is behind it, which
+showed as hard bars once the tail got long — past about 0.7 softness, where the
+fade band covers most of the window.
+
+Neither setting is right on its own, so a soft tail over opaque material is
+drawn in two passes. The opaque core goes first: fully lit fragments only, depth
+writes on, no blending. Then the fringe: partial fragments only, blended against
+the core with the depth test on but depth writes off. The core occludes
+correctly and the fringe neither hides what is behind it nor paints over its own
+curve. With softness at zero there is no fringe, so it stays a single opaque
+pass.
 
 What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather
