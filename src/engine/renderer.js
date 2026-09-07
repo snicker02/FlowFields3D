@@ -52,7 +52,7 @@ export class Renderer {
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow', 'uTexImage', 'uTexHasImage']);
+      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTexImage', 'uTexHasImage']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -168,11 +168,10 @@ export class Renderer {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
-    } else if (travelSoft) {
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.depthMask(true);
     }
+    // A soft tail over opaque material is drawn in two passes instead; the
+    // state for each is set below, at the draw.
+    const twoPass = travelSoft && !seeThrough;
     if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
 
     const p = this.prog, u = this.uni;
@@ -216,16 +215,39 @@ export class Renderer {
     gl.uniform1f(u.uTravelStagger, style.travelStagger);
     gl.uniform1f(u.uTravelCount, style.travelCount);
     gl.uniform1f(u.uTravelGlow, style.travelGlow);
+    gl.uniform1f(u.uTravelPass, 0);
 
     if (needsSort) this.sortForView(look.viewDir);
 
-    for (const b of this.buffers) {
-      bind(gl, b.pos, this.attr.pos, 3);
-      bind(gl, b.nor, this.attr.nor, 3);
-      bind(gl, b.col, this.attr.col, 3);
-      bind(gl, b.par, this.attr.par, 3);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
-      gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
+    const drawAll = () => {
+      for (const b of this.buffers) {
+        bind(gl, b.pos, this.attr.pos, 3);
+        bind(gl, b.nor, this.attr.nor, 3);
+        bind(gl, b.col, this.attr.col, 3);
+        bind(gl, b.par, this.attr.par, 3);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
+        gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
+      }
+    };
+
+    if (twoPass) {
+      // Core first: fully opaque, writes depth, no blending. Then the fringe,
+      // blended against it with depth test on but depth writes off, so a
+      // half-transparent tail neither hides what is behind it nor lets the
+      // curve paint over itself.
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+      gl.uniform1f(u.uTravelPass, 1);
+      drawAll();
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      gl.uniform1f(u.uTravelPass, 2);
+      drawAll();
+    } else {
+      gl.uniform1f(u.uTravelPass, 0);
+      drawAll();
     }
 
     gl.disable(gl.BLEND);
