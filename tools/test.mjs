@@ -303,6 +303,42 @@ section('end caps and chunking');
     }
   }
 
+  // Winding. Back-face culling on closed forms is what stops a tube blending
+  // its own far wall over its near wall during the travel fringe pass, and that
+  // is only safe if every triangle is wound consistently with its normals. If a
+  // future change to the index order breaks this, culling would remove the
+  // front faces instead and the form would turn inside out.
+  for (const [geomMode, label] of [[1, 'tube'], [3, 'box']]) {
+    for (const caps of [false, true]) {
+      const opts = { ...baseOpts, geomMode, caps, width: 0.05 };
+      const c = buildMesh(prepareCurves(makeCurves(1, 60), opts, grad), opts)[0];
+      let agree = 0, disagree = 0, degenerate = 0;
+      for (let t = 0; t < c.indexCount; t += 3) {
+        const ia = c.indices[t], ib = c.indices[t + 1], ic = c.indices[t + 2];
+        const ax = c.positions[ia * 3], ay = c.positions[ia * 3 + 1], az = c.positions[ia * 3 + 2];
+        const bx = c.positions[ib * 3], by = c.positions[ib * 3 + 1], bz = c.positions[ib * 3 + 2];
+        const cx = c.positions[ic * 3], cy = c.positions[ic * 3 + 1], cz = c.positions[ic * 3 + 2];
+        const ux = bx - ax, uy = by - ay, uz = bz - az;
+        const vx = cx - ax, vy = cy - ay, vz = cz - az;
+        const gx = uy * vz - uz * vy, gy = uz * vx - ux * vz, gz = ux * vy - uy * vx;
+        const gl2 = Math.hypot(gx, gy, gz);
+        if (gl2 < 1e-12) { degenerate++; continue; }
+        const d = (gx * c.normals[ia * 3] + gy * c.normals[ia * 3 + 1] + gz * c.normals[ia * 3 + 2]) / gl2;
+        if (d > 0.05) agree++; else if (d < -0.05) disagree++; else degenerate++;
+      }
+      ok(`${label}${caps ? ' capped' : ''}: every triangle faces outward`,
+        disagree === 0 && degenerate === 0 && agree > 0, `${agree} agree, ${disagree} disagree, ${degenerate} degenerate`);
+    }
+  }
+
+  // Only closed forms may be culled.
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    const opts = { ...baseOpts, geomMode, caps: true };
+    const chunks = buildMesh(prepareCurves(makeCurves(2, 40), opts, grad), opts);
+    const expect = geomMode === 1 || geomMode === 3;
+    ok(`form ${geomMode}: marked ${expect ? 'closed' : 'open'}`, chunks.every((c) => !!c.closed === expect));
+  }
+
   // Cap normals must point along the curve, not across it — that is the whole
   // reason the rim vertices are duplicated instead of reused.
   {
@@ -913,7 +949,7 @@ section('material and texture');
     'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
     'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
     'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-    'uTravelCount', 'uTravelGlow'];
+    'uTravelCount', 'uTravelGlow', 'uTravelPass'];
   for (const name of setByRenderer) ok(`shader declares ${name}`, declared.has(name));
 
   const look = defaultState().look;
@@ -962,16 +998,56 @@ section('material and texture');
 
   // Glass must blend even at full opacity, or the Fresnel alpha does nothing.
   // This mirrors the condition in renderer.js.
-  const needsBlend = (style) => style.renderMode === 1
-    || (style.renderMode === 0 && (style.material | 0) === 2)
-    || (style.travelMode | 0) > 0
-    || style.opacity < 0.999;
+  // Transcribed from renderer.js. Travel is a cutout: it blends only for a soft
+  // tail, and it never gives up depth writes — that was what let a coiled tube
+  // paint its own far side over its near side.
+  const softTravel = (s2) => (s2.travelMode | 0) > 0 && (s2.travelSoft || 0) > 0.001;
+  const seeThrough = (s2) => s2.renderMode === 1
+    || (s2.renderMode === 0 && (s2.material | 0) === 2)
+    || s2.opacity < 0.999;
+  const needsBlend = (s2) => seeThrough(s2) || softTravel(s2);
+  const writesDepth = (s2) => !seeThrough(s2);
   ok('glass blends at full opacity', needsBlend({ renderMode: 0, material: 2, opacity: 1 }));
   ok('satin at full opacity does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1 }));
   ok('mirror at full opacity does not blend', !needsBlend({ renderMode: 0, material: 1, opacity: 1 }));
   ok('flat mode ignores the material', !needsBlend({ renderMode: 2, material: 2, opacity: 1 }));
-  ok('travel blends at full opacity', needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 1 }));
+  const soft = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0.6 };
+  const hard = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0 };
+  ok('a soft tail blends', needsBlend(soft));
+  ok('a hard tail needs no blending at all', !needsBlend(hard));
   ok('travel off does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 0 }));
+
+  // The regression: travel must never turn depth writes off. Without them a
+  // curve's own far side paints over its near side and no amount of per-curve
+  // sorting can fix it, because the overlap is inside one curve.
+  ok('a soft tail still writes depth', writesDepth(soft));
+  ok('a hard tail still writes depth', writesDepth(hard));
+  ok('glass gives up depth writes', !writesDepth({ renderMode: 0, material: 2, opacity: 1 }));
+  ok('additive gives up depth writes', !writesDepth({ renderMode: 1, material: 0, opacity: 1 }));
+  ok('travel over glass follows glass', !writesDepth({ renderMode: 0, material: 2, opacity: 1, travelMode: 1, travelSoft: 0.6 }));
+
+  // A soft tail over opaque material is drawn twice: an opaque core that writes
+  // depth, then a blended fringe that does not. One pass cannot be right —
+  // depth writes on and the fringe hides what is behind it, off and the curve
+  // paints over itself. Both were shipped and both were visible.
+  const twoPass = (s2) => softTravel(s2) && !seeThrough(s2);
+  ok('a soft tail over opaque material takes two passes', twoPass(soft));
+  ok('a hard tail takes one pass', !twoPass(hard));
+  ok('travel over glass takes one pass', !twoPass({ renderMode: 0, material: 2, opacity: 1, travelMode: 1, travelSoft: 0.6 }));
+  ok('no travel takes one pass', !twoPass({ renderMode: 0, material: 0, opacity: 1, travelMode: 0, travelSoft: 0.6 }));
+
+  // The two passes must partition the window exactly: every fragment belongs to
+  // one of them and none to both, or the tail would double-blend or drop out.
+  const core = (lit) => lit >= 0.02 && lit > 0.999;
+  const fringe = (lit) => lit >= 0.02 && lit <= 0.999;
+  let partitioned = true;
+  for (let i = 0; i <= 200; i++) {
+    const lit = i / 200;
+    const visible = lit >= 0.02;
+    if (core(lit) === fringe(lit) && visible) partitioned = false;
+    if (visible && !core(lit) && !fringe(lit)) partitioned = false;
+  }
+  ok('the two passes partition the window exactly', partitioned);
 
   // The travel window must actually be a window: lit somewhere, dark elsewhere,
   // and it must sweep the whole curve exactly once per unit of phase. This is

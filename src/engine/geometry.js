@@ -246,8 +246,12 @@ export function prepareCurves(curves, opts, gradient) {
 }
 
 class Chunk {
-  constructor(mode) {
+  constructor(mode, closed) {
     this.mode = mode;
+    // Tubes and boxes are closed surfaces with consistent outward winding, so
+    // their back faces can be culled. Ribbons and lines are open sheets and
+    // must stay two-sided.
+    this.closed = !!closed;
     this.positions = []; this.normals = []; this.colors = []; this.params = []; this.indices = [];
     // One entry per curve: where its indices start, how many, and its centroid.
     // Transparent draws reorder these back to front; opaque draws ignore them.
@@ -262,6 +266,7 @@ class Chunk {
       colors: new Float32Array(this.colors),
       params: new Float32Array(this.params),
       indices: new Uint16Array(this.indices),
+      closed: this.closed,
       ranges: this.ranges,
       centroids: new Float32Array(this.ranges.length * 3),
       vertexCount: this.positions.length / 3,
@@ -285,14 +290,15 @@ export function buildMesh(prepared, opts) {
   const caps = !!opts.caps && (mode === 1 || mode === 3);
   const capVerts = caps ? (mode === 1 ? 2 * (sides + 1) : 2 * 5) : 0;
   const chunks = [];
-  let chunk = new Chunk(glMode);
+  const closedForm = mode === 1 || mode === 3;
+  let chunk = new Chunk(glMode, closedForm);
   const rgb = [0, 0, 0];
 
   for (const it of prepared.items) {
     const n = it.n;
     if (chunk.vertexCount + n * vertsPerSample + capVerts > MAX_VERTS && chunk.vertexCount > 0) {
       chunks.push(chunk.freeze());
-      chunk = new Chunk(glMode);
+      chunk = new Chunk(glMode, closedForm);
     }
     // Taken *after* the flush. Reading it before meant that the first curve in
     // every chunk after the first recorded a start offset from the previous

@@ -52,7 +52,7 @@ export class Renderer {
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow', 'uTexImage', 'uTexHasImage']);
+      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTexImage', 'uTexHasImage']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -90,6 +90,7 @@ export class Renderer {
         idx: mk(c.indices, gl.ELEMENT_ARRAY_BUFFER),
         count: c.indexCount,
         mode: c.mode,
+        closed: !!c.closed,
         // Kept on the CPU so transparent draws can reorder the curves back to
         // front without rebuilding the geometry.
         srcIndices: c.indices,
@@ -149,21 +150,29 @@ export class Renderer {
     // when opacity is 1. Without sorted geometry the ordering is approximate;
     // leaving the depth buffer read-only is what keeps it from looking wrong.
     const glass = style.renderMode === 0 && (style.material | 0) === 2;
-    // Sorting only matters where the result depends on draw order.
-    // Travel fades the tail out, so it wants the same treatment as glass.
+    // Travel is a *cutout*, not a transparency: the window is fully opaque
+    // through its middle and the shader discards everything outside it. Only
+    // the tail edge is partial. Treating it like glass — depth writes off —
+    // meant a curve's own far side painted over its near side in index order,
+    // and per-curve sorting cannot help inside a single curve. On a coiled tube
+    // that shows as fine combing where it crosses itself. So travel keeps depth
+    // writes on, and blends only when the tail is soft.
     const travelling = (style.travelMode | 0) > 0;
-    const needsSort = !!style.sortDepth && !!look.viewDir
-      && (glass || additive || travelling || style.opacity < 0.999);
+    const travelSoft = travelling && style.travelSoft > 0.001;
+    const seeThrough = glass || additive || style.opacity < 0.999;
+    const needsSort = !!style.sortDepth && !!look.viewDir && (seeThrough || travelSoft);
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.depthMask(false);
-    } else if (glass || travelling || style.opacity < 0.999) {
+    } else if (glass || style.opacity < 0.999) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
     }
-    if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
+    // A soft tail over opaque material is drawn in two passes instead; the
+    // state for each is set below, at the draw.
+    const twoPass = travelSoft && !seeThrough;
 
     const p = this.prog, u = this.uni;
     gl.useProgram(p);
@@ -206,16 +215,47 @@ export class Renderer {
     gl.uniform1f(u.uTravelStagger, style.travelStagger);
     gl.uniform1f(u.uTravelCount, style.travelCount);
     gl.uniform1f(u.uTravelGlow, style.travelGlow);
+    gl.uniform1f(u.uTravelPass, 0);
 
     if (needsSort) this.sortForView(look.viewDir);
 
-    for (const b of this.buffers) {
-      bind(gl, b.pos, this.attr.pos, 3);
-      bind(gl, b.nor, this.attr.nor, 3);
-      bind(gl, b.col, this.attr.col, 3);
-      bind(gl, b.par, this.attr.par, 3);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
-      gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
+    const drawAll = (cullClosed) => {
+      for (const b of this.buffers) {
+        if (cullClosed && b.closed) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
+        else if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
+        else gl.disable(gl.CULL_FACE);
+        bind(gl, b.pos, this.attr.pos, 3);
+        bind(gl, b.nor, this.attr.nor, 3);
+        bind(gl, b.col, this.attr.col, 3);
+        bind(gl, b.par, this.attr.par, 3);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
+        gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
+      }
+    };
+
+    if (twoPass) {
+      // Core first: fully opaque, writes depth, no blending. Then the fringe,
+      // blended against it with depth test on but depth writes off, so a
+      // half-transparent tail neither hides what is behind it nor lets the
+      // curve paint over itself.
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+      gl.uniform1f(u.uTravelPass, 1);
+      drawAll(false);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      gl.uniform1f(u.uTravelPass, 2);
+      // The fringe blends with depth writes off, so a closed form would show
+      // its own far wall through its near wall — flat facet-shaped bars along a
+      // tube or box. Culling back faces removes that by construction, and the
+      // winding is consistent enough to rely on: every triangle's geometric
+      // normal agrees with its vertex normals, which the tests check.
+      drawAll(true);
+    } else {
+      gl.uniform1f(u.uTravelPass, 0);
+      drawAll(false);
     }
 
     gl.disable(gl.BLEND);

@@ -70,6 +70,12 @@ uniform float uTravelSoft;
 uniform float uTravelStagger;
 uniform float uTravelCount;  // dashes per curve
 uniform float uTravelGlow;   // extra brightness at the leading edge
+// 0 = draw the whole window in one pass. 1 = the opaque core only. 2 = the
+// soft fringe only. A long soft tail cannot be drawn correctly in one pass:
+// with depth writes on, the half-transparent fringe occludes whatever is
+// behind it; with them off, a curve paints over itself. Splitting the two
+// lets the core write depth and the fringe blend against it.
+uniform float uTravelPass;
 
 // Deliberately built from sines and smoothstep rather than step() and fwidth():
 // derivatives need GL_OES_standard_derivatives, which WebGL1 does not promise,
@@ -134,7 +140,14 @@ void main() {
       head = 1.0 - clamp((front - vParam.x) / len, 0.0, 1.0);
     }
     if (lit < 0.02) discard;                       // keeps the depth buffer clean
-    alpha *= lit;
+    if (uTravelPass > 1.5) {                       // fringe pass
+      if (lit > 0.999) discard;
+      alpha *= lit;
+    } else if (uTravelPass > 0.5) {                // opaque core pass
+      if (lit <= 0.999) discard;
+    } else {
+      alpha *= lit;
+    }
   }
 
   if (uTexMode > 7.5 && uTexHasImage > 0.5 && uTexAmount > 0.001) {

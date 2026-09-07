@@ -165,9 +165,35 @@ along it is not a decoration: it is the motion the field describes. Controls for
 trail length, speed, dash count, per-curve stagger, tail softness and head glow.
 
 Both cost one uniform per frame, because the geometry never changes and nothing
-re-traces. Travel fades its tail, so it turns on blending and depth sorting the
-same way glass does, and discards fully dark fragments to keep the depth buffer
-clean.
+re-traces.
+
+Travel is a *cutout*, not a transparency: the window is fully opaque through its
+middle and the shader discards everything outside it, so only the tail edge is
+partial. That distinction turned out to matter. Treating travel like glass —
+giving up depth writes — meant a curve's own far side painted over its near side
+in index order, and per-curve sorting cannot help there, because the overlap is
+inside a single curve. On a coiled tube it showed as fine combing wherever the
+tube crossed itself. Keeping depth writes on fixed that and revealed the other half of the problem:
+a half-transparent fringe that writes depth hides whatever is behind it, which
+showed as hard bars once the tail got long — past about 0.7 softness, where the
+fade band covers most of the window.
+
+Neither setting is right on its own, so a soft tail over opaque material is
+drawn in two passes. The opaque core goes first: fully lit fragments only, depth
+writes on, no blending. Then the fringe: partial fragments only, blended against
+the core with the depth test on but depth writes off. The core occludes
+correctly and the fringe neither hides what is behind it nor paints over its own
+curve. With softness at zero there is no fringe, so it stays a single opaque
+pass.
+
+The fringe still blends with depth writes off, which leaves one case: a closed
+form showing its own far wall through its near wall, as flat facet-shaped bars
+along a tube or box. Back-face culling removes that by construction, so the
+fringe pass culls closed forms regardless of the global two-sided setting.
+Ribbons and lines are open sheets and stay two-sided. That relies on consistent
+winding, so the tests check that every triangle's geometric normal agrees with
+its vertex normals — if a change to the index order ever broke it, culling would
+remove the front faces and turn the form inside out.
 
 What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather
