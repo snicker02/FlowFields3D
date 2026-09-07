@@ -149,19 +149,29 @@ export class Renderer {
     // when opacity is 1. Without sorted geometry the ordering is approximate;
     // leaving the depth buffer read-only is what keeps it from looking wrong.
     const glass = style.renderMode === 0 && (style.material | 0) === 2;
-    // Sorting only matters where the result depends on draw order.
-    // Travel fades the tail out, so it wants the same treatment as glass.
+    // Travel is a *cutout*, not a transparency: the window is fully opaque
+    // through its middle and the shader discards everything outside it. Only
+    // the tail edge is partial. Treating it like glass — depth writes off —
+    // meant a curve's own far side painted over its near side in index order,
+    // and per-curve sorting cannot help inside a single curve. On a coiled tube
+    // that shows as fine combing where it crosses itself. So travel keeps depth
+    // writes on, and blends only when the tail is soft.
     const travelling = (style.travelMode | 0) > 0;
-    const needsSort = !!style.sortDepth && !!look.viewDir
-      && (glass || additive || travelling || style.opacity < 0.999);
+    const travelSoft = travelling && style.travelSoft > 0.001;
+    const seeThrough = glass || additive || style.opacity < 0.999;
+    const needsSort = !!style.sortDepth && !!look.viewDir && (seeThrough || travelSoft);
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.depthMask(false);
-    } else if (glass || travelling || style.opacity < 0.999) {
+    } else if (glass || style.opacity < 0.999) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
+    } else if (travelSoft) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(true);
     }
     if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
 
