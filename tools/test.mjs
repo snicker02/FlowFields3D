@@ -949,7 +949,7 @@ section('material and texture');
     'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
     'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
     'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-    'uTravelCount', 'uTravelGlow', 'uTravelPass'];
+    'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTravelDither'];
   for (const name of setByRenderer) ok(`shader declares ${name}`, declared.has(name));
 
   const look = defaultState().look;
@@ -1001,7 +1001,10 @@ section('material and texture');
   // Transcribed from renderer.js. Travel is a cutout: it blends only for a soft
   // tail, and it never gives up depth writes — that was what let a coiled tube
   // paint its own far side over its near side.
-  const softTravel = (s2) => (s2.travelMode | 0) > 0 && (s2.travelSoft || 0) > 0.001;
+  // Dithered travel is a cutout: opaque fragments only, so it needs no
+  // blending, no depth-write compromise, no sorting and no culling.
+  const dithered = (s2) => (s2.travelMode | 0) > 0 && s2.travelDither !== false;
+  const softTravel = (s2) => (s2.travelMode | 0) > 0 && !dithered(s2) && (s2.travelSoft || 0) > 0.001;
   const seeThrough = (s2) => s2.renderMode === 1
     || (s2.renderMode === 0 && (s2.material | 0) === 2)
     || s2.opacity < 0.999;
@@ -1011,8 +1014,15 @@ section('material and texture');
   ok('satin at full opacity does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1 }));
   ok('mirror at full opacity does not blend', !needsBlend({ renderMode: 0, material: 1, opacity: 1 }));
   ok('flat mode ignores the material', !needsBlend({ renderMode: 2, material: 2, opacity: 1 }));
-  const soft = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0.6 };
-  const hard = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0 };
+  const soft = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0.6, travelDither: false };
+  const hard = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0, travelDither: false };
+  const dith = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 1, travelDither: true };
+
+  // The whole point of dither mode: nothing about it depends on draw order,
+  // even with the softest possible tail.
+  ok('a dithered tail needs no blending', !needsBlend(dith));
+  ok('a dithered tail writes depth', writesDepth(dith));
+  ok('dither is the default', defaultState().look.travelDither === true);
   ok('a soft tail blends', needsBlend(soft));
   ok('a hard tail needs no blending at all', !needsBlend(hard));
   ok('travel off does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 0 }));
@@ -1032,6 +1042,38 @@ section('material and texture');
   // paints over itself. Both were shipped and both were visible.
   const twoPass = (s2) => softTravel(s2) && !seeThrough(s2);
   ok('a soft tail over opaque material takes two passes', twoPass(soft));
+  ok('a dithered tail takes one pass', !twoPass(dith));
+
+  // The dither threshold must be well distributed, or the tail would band
+  // instead of dissolving. This is the shader's function transcribed.
+  const ign = (x, y) => {
+    const inner = (0.06711056 * x + 0.00583715 * y);
+    const f = inner - Math.floor(inner);
+    const v = 52.9829189 * f;
+    return v - Math.floor(v);
+  };
+  {
+    const bins = new Array(10).fill(0);
+    let lo = 1, hi = 0;
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const v = ign(x, y);
+        bins[Math.min(9, Math.floor(v * 10))]++;
+        lo = Math.min(lo, v); hi = Math.max(hi, v);
+      }
+    }
+    const expected = 4096 / 10;
+    ok('the dither threshold covers 0..1', lo < 0.02 && hi > 0.98, `${lo.toFixed(3)}..${hi.toFixed(3)}`);
+    ok('the dither threshold is evenly distributed',
+      bins.every((b) => b > expected * 0.6 && b < expected * 1.4),
+      bins.join(','));
+    // Neighbouring pixels must differ, or the stipple becomes visible stripes.
+    let sameAsNeighbour = 0;
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 63; x++) if (Math.abs(ign(x, y) - ign(x + 1, y)) < 0.02) sameAsNeighbour++;
+    }
+    ok('neighbouring pixels get different thresholds', sameAsNeighbour < 4032 * 0.1, `${sameAsNeighbour} of 4032`);
+  }
   ok('a hard tail takes one pass', !twoPass(hard));
   ok('travel over glass takes one pass', !twoPass({ renderMode: 0, material: 2, opacity: 1, travelMode: 1, travelSoft: 0.6 }));
   ok('no travel takes one pass', !twoPass({ renderMode: 0, material: 0, opacity: 1, travelMode: 0, travelSoft: 0.6 }));

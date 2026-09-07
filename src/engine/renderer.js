@@ -52,7 +52,7 @@ export class Renderer {
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTexImage', 'uTexHasImage']);
+      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTravelDither', 'uTexImage', 'uTexHasImage']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -90,6 +90,7 @@ export class Renderer {
         idx: mk(c.indices, gl.ELEMENT_ARRAY_BUFFER),
         count: c.indexCount,
         mode: c.mode,
+        closed: !!c.closed,
         // Kept on the CPU so transparent draws can reorder the curves back to
         // front without rebuilding the geometry.
         srcIndices: c.indices,
@@ -157,7 +158,8 @@ export class Renderer {
     // that shows as fine combing where it crosses itself. So travel keeps depth
     // writes on, and blends only when the tail is soft.
     const travelling = (style.travelMode | 0) > 0;
-    const travelSoft = travelling && style.travelSoft > 0.001;
+    const dither = travelling && style.travelDither !== false;
+    const travelSoft = travelling && !dither && style.travelSoft > 0.001;
     const seeThrough = glass || additive || style.opacity < 0.999;
     const needsSort = !!style.sortDepth && !!look.viewDir && (seeThrough || travelSoft);
     if (additive) {
@@ -172,7 +174,6 @@ export class Renderer {
     // A soft tail over opaque material is drawn in two passes instead; the
     // state for each is set below, at the draw.
     const twoPass = travelSoft && !seeThrough;
-    if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
 
     const p = this.prog, u = this.uni;
     gl.useProgram(p);
@@ -220,6 +221,8 @@ export class Renderer {
     if (needsSort) this.sortForView(look.viewDir);
 
     const drawAll = () => {
+      if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
+      else gl.disable(gl.CULL_FACE);
       for (const b of this.buffers) {
         bind(gl, b.pos, this.attr.pos, 3);
         bind(gl, b.nor, this.attr.nor, 3);
@@ -244,6 +247,12 @@ export class Renderer {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
       gl.uniform1f(u.uTravelPass, 2);
+      // Not culled. Forcing back-face culling here looked like the right fix
+      // for a closed form blending through itself, and it introduced a worse
+      // artifact: the side quads are non-planar wherever the frame rotates, so
+      // seen nearly edge-on one of each quad's two triangles faces away and
+      // gets culled while its twin survives — a sawtooth along the whole form.
+      // Dither mode is the answer to self-overlap; culling is not.
       drawAll();
     } else {
       gl.uniform1f(u.uTravelPass, 0);

@@ -134,6 +134,7 @@ export function defaultState() {
       travelSpeed: 0.25,
       travelPhase: 0,
       travelSoft: 0.6,
+      travelDither: true,     // stochastic cutout: no blending, no ordering
       travelStagger: 1,
       travelCount: 4,
       travelGlow: 0.8,

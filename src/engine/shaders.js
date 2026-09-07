@@ -76,6 +76,13 @@ uniform float uTravelGlow;   // extra brightness at the leading edge
 // behind it; with them off, a curve paints over itself. Splitting the two
 // lets the core write depth and the fringe blend against it.
 uniform float uTravelPass;
+uniform float uTravelDither;  // 1 = stochastic cutout instead of blending
+
+// Interleaved gradient noise (Jimenez). A dither threshold with no lookup
+// table and no integer bit operations, neither of which GLSL ES 1.0 offers.
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+}
 
 // Deliberately built from sines and smoothstep rather than step() and fwidth():
 // derivatives need GL_OES_standard_derivatives, which WebGL1 does not promise,
@@ -140,7 +147,14 @@ void main() {
       head = 1.0 - clamp((front - vParam.x) / len, 0.0, 1.0);
     }
     if (lit < 0.02) discard;                       // keeps the depth buffer clean
-    if (uTravelPass > 1.5) {                       // fringe pass
+    if (uTravelDither > 0.5) {
+      // Stochastic cutout: keep or drop the whole fragment against a dither
+      // threshold instead of blending it. Every surviving fragment is opaque,
+      // so depth writes stay on and nothing depends on draw order — no
+      // self-overlap, no sorting, no culling. The tail dissolves as a stipple
+      // that resolves to a smooth fade under antialiasing or supersampling.
+      if (lit < ign(gl_FragCoord.xy)) discard;
+    } else if (uTravelPass > 1.5) {                // fringe pass
       if (lit > 0.999) discard;
       alpha *= lit;
     } else if (uTravelPass > 0.5) {                // opaque core pass

@@ -175,16 +175,25 @@ in index order, and per-curve sorting cannot help there, because the overlap is
 inside a single curve. On a coiled tube it showed as fine combing wherever the
 tube crossed itself. Keeping depth writes on fixed that and revealed the other half of the problem:
 a half-transparent fringe that writes depth hides whatever is behind it, which
-showed as hard bars once the tail got long — past about 0.7 softness, where the
-fade band covers most of the window.
+showed as hard bars once the tail got long. Splitting it into an opaque core
+pass and a blended fringe pass fixed that, and left a third: a closed form
+blending through its own far wall. Back-face culling looked like the answer and
+was worse — the side quads are non-planar wherever the frame rotates, so seen
+nearly edge-on one of each quad's two triangles faces away and gets culled while
+its twin survives, sawtoothing the whole form.
 
-Neither setting is right on its own, so a soft tail over opaque material is
-drawn in two passes. The opaque core goes first: fully lit fragments only, depth
-writes on, no blending. Then the fringe: partial fragments only, blended against
-the core with the depth test on but depth writes off. The core occludes
-correctly and the fringe neither hides what is behind it nor paints over its own
-curve. With softness at zero there is no fringe, so it stays a single opaque
-pass.
+Three fixes, three new artifacts, all from the same root cause: a blended tail
+is order-dependent, and no amount of sorting fixes overlap *within* one curve.
+
+So the tail is not blended at all by default. **Dithered tail** keeps or drops
+each fragment whole against an interleaved-gradient-noise threshold — a
+stochastic cutout. Every surviving fragment is opaque, so depth writes stay on
+and nothing depends on draw order: no self-overlap, no sorting, no culling, no
+passes. The tail dissolves as a stipple that resolves to a smooth fade under
+antialiasing, and cleanly at export resolutions where supersampling is doing the
+work anyway. Turning it off restores the two-pass blended path, which is
+slightly smoother at 1x and carries the ordering caveats above.
+
 
 What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather

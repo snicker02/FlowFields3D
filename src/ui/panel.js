@@ -204,6 +204,7 @@ export const SCHEMA = [
       { type: 'slider', path: 'look.travelCount', label: 'Dashes per curve', min: 1, max: 24, step: 1, level: 'draw' },
       { type: 'slider', path: 'look.travelStagger', label: 'Stagger between curves', min: 0, max: 1, step: 0.005, level: 'draw' },
       { type: 'slider', path: 'look.travelSoft', label: 'Tail softness', min: 0, max: 1, step: 0.005, level: 'draw' },
+      { type: 'toggle', path: 'look.travelDither', label: 'Dithered tail', level: 'draw' },
       { type: 'slider', path: 'look.travelGlow', label: 'Head glow', min: 0, max: 3, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'look.autoRotate', label: 'Auto-rotate', min: -1, max: 1, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'camera.fov', label: 'Field of view', min: 12, max: 100, step: 1, level: 'draw' },
