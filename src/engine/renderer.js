@@ -90,7 +90,6 @@ export class Renderer {
         idx: mk(c.indices, gl.ELEMENT_ARRAY_BUFFER),
         count: c.indexCount,
         mode: c.mode,
-        closed: !!c.closed,
         // Kept on the CPU so transparent draws can reorder the curves back to
         // front without rebuilding the geometry.
         srcIndices: c.indices,
@@ -173,6 +172,7 @@ export class Renderer {
     // A soft tail over opaque material is drawn in two passes instead; the
     // state for each is set below, at the draw.
     const twoPass = travelSoft && !seeThrough;
+    if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); } else gl.disable(gl.CULL_FACE);
 
     const p = this.prog, u = this.uni;
     gl.useProgram(p);
@@ -219,11 +219,8 @@ export class Renderer {
 
     if (needsSort) this.sortForView(look.viewDir);
 
-    const drawAll = (cullClosed) => {
+    const drawAll = () => {
       for (const b of this.buffers) {
-        if (cullClosed && b.closed) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
-        else if (style.cull) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); }
-        else gl.disable(gl.CULL_FACE);
         bind(gl, b.pos, this.attr.pos, 3);
         bind(gl, b.nor, this.attr.nor, 3);
         bind(gl, b.col, this.attr.col, 3);
@@ -241,21 +238,16 @@ export class Renderer {
       gl.disable(gl.BLEND);
       gl.depthMask(true);
       gl.uniform1f(u.uTravelPass, 1);
-      drawAll(false);
+      drawAll();
 
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
       gl.uniform1f(u.uTravelPass, 2);
-      // The fringe blends with depth writes off, so a closed form would show
-      // its own far wall through its near wall — flat facet-shaped bars along a
-      // tube or box. Culling back faces removes that by construction, and the
-      // winding is consistent enough to rely on: every triangle's geometric
-      // normal agrees with its vertex normals, which the tests check.
-      drawAll(true);
+      drawAll();
     } else {
       gl.uniform1f(u.uTravelPass, 0);
-      drawAll(false);
+      drawAll();
     }
 
     gl.disable(gl.BLEND);

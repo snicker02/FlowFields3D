@@ -186,15 +186,6 @@ correctly and the fringe neither hides what is behind it nor paints over its own
 curve. With softness at zero there is no fringe, so it stays a single opaque
 pass.
 
-The fringe still blends with depth writes off, which leaves one case: a closed
-form showing its own far wall through its near wall, as flat facet-shaped bars
-along a tube or box. Back-face culling removes that by construction, so the
-fringe pass culls closed forms regardless of the global two-sided setting.
-Ribbons and lines are open sheets and stay two-sided. That relies on consistent
-winding, so the tests check that every triangle's geometric normal agrees with
-its vertex normals — if a change to the index order ever broke it, culling would
-remove the front faces and turn the form inside out.
-
 What is *not* animated is field evolution. Several fields take `time`, but
 changing it re-integrates every streamline, which is a frame-sequence job rather
 than a realtime one.
