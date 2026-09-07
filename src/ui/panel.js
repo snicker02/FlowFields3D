@@ -116,6 +116,7 @@ export const SCHEMA = [
       { type: 'slider', path: 'geom.taperPower', label: 'Taper sharpness', min: 0.05, max: 3, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.twist', label: 'Twist turns', min: -6, max: 6, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.twistNoise', label: 'Twist noise', min: 0, max: 2, step: 0.01, level: 'geom' },
+      { type: 'toggle', path: 'geom.caps', label: 'Close the ends', level: 'geom' },
       { type: 'slider', path: 'geom.sides', label: 'Tube sides', min: 3, max: 16, step: 1, level: 'geom' },
       { type: 'slider', path: 'geom.aspect', label: 'Tube flatness', min: 0.05, max: 1, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.smoothIters', label: 'Smoothing passes', min: 0, max: 6, step: 1, level: 'geom' },

@@ -280,17 +280,26 @@ export function buildMesh(prepared, opts) {
   // rather than a bar with edges.
   const vertsPerSample = mode === 0 ? 2 : mode === 1 ? sides : mode === 3 ? 8 : 1;
   const glMode = mode === 2 ? 'lines' : 'triangles';
+  // End caps need their own vertices: the cap normal is the tangent, which is
+  // perpendicular to every normal already on the rim.
+  const caps = !!opts.caps && (mode === 1 || mode === 3);
+  const capVerts = caps ? (mode === 1 ? 2 * (sides + 1) : 2 * 5) : 0;
   const chunks = [];
   let chunk = new Chunk(glMode);
   const rgb = [0, 0, 0];
 
   for (const it of prepared.items) {
     const n = it.n;
-    const rangeStart = chunk.indices.length;
-    if (chunk.vertexCount + n * vertsPerSample > MAX_VERTS && chunk.vertexCount > 0) {
+    if (chunk.vertexCount + n * vertsPerSample + capVerts > MAX_VERTS && chunk.vertexCount > 0) {
       chunks.push(chunk.freeze());
       chunk = new Chunk(glMode);
     }
+    // Taken *after* the flush. Reading it before meant that the first curve in
+    // every chunk after the first recorded a start offset from the previous
+    // chunk and a negative count, so the depth sort skipped its indices and
+    // left the reordered buffer short — degenerate triangles, showing as thin
+    // gaps across the ribbons.
+    const rangeStart = chunk.indices.length;
     const base = chunk.vertexCount;
     const { pos, tan, nor, col, wid } = it;
 
@@ -364,6 +373,55 @@ export function buildMesh(prepared, opts) {
       }
     } else {
       for (let i = 0; i < n - 1; i++) chunk.indices.push(base + i, base + i + 1);
+    }
+
+    if (caps && n > 1) {
+      // One fan per end. The rim vertices are duplicated rather than reused,
+      // because a cap vertex needs the tangent as its normal and the side
+      // vertices need the surface normal — sharing them would round the edge
+      // and darken the rim.
+      for (const end of [0, 1]) {
+        const i = end ? n - 1 : 0;
+        const i3 = i * 3;
+        const px = pos[i3], py = pos[i3 + 1], pz = pos[i3 + 2];
+        const sgn = end ? 1 : -1;
+        const tx = tan[i3] * sgn, ty = tan[i3 + 1] * sgn, tz = tan[i3 + 2] * sgn;
+        const ux = nor[i3], uy = nor[i3 + 1], uz = nor[i3 + 2];
+        const wx0 = tan[i3 + 1] * uz - tan[i3 + 2] * uy;
+        const wy0 = tan[i3 + 2] * ux - tan[i3] * uz;
+        const wz0 = tan[i3] * uy - tan[i3 + 1] * ux;
+        const w = wid[i];
+        const s = end ? 1 : 0;
+        rgb[0] = col[i3]; rgb[1] = col[i3 + 1]; rgb[2] = col[i3 + 2];
+
+        const centre = chunk.vertexCount;
+        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5);
+
+        const ring = mode === 1 ? sides : 4;
+        const rx = w, ry = Math.max(1e-6, w * opts.aspect);
+        for (let k = 0; k < ring; k++) {
+          let ox, oy, oz;
+          if (mode === 1) {
+            const a = (k / ring) * Math.PI * 2;
+            const ca = Math.cos(a), sa = Math.sin(a);
+            ox = ux * ca * rx + wx0 * sa * ry;
+            oy = uy * ca * rx + wy0 * sa * ry;
+            oz = uz * ca * rx + wz0 * sa * ry;
+          } else {
+            const sx = (k === 1 || k === 2) ? 1 : -1;
+            const sy = (k >= 2) ? 1 : -1;
+            ox = ux * rx * sx + wx0 * ry * sy;
+            oy = uy * rx * sx + wy0 * ry * sy;
+            oz = uz * rx * sx + wz0 * ry * sy;
+          }
+          pushVert(chunk, px + ox, py + oy, pz + oz, tx, ty, tz, rgb, s, it.rnd, k / ring);
+        }
+        for (let k = 0; k < ring; k++) {
+          const a = centre + 1 + k, b = centre + 1 + ((k + 1) % ring);
+          if (end) chunk.indices.push(centre, a, b);
+          else chunk.indices.push(centre, b, a);
+        }
+      }
     }
 
     let cx = 0, cy = 0, cz = 0;

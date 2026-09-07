@@ -212,6 +212,111 @@ section('symmetry');
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
 }
 
+// ---------------------------------------------------------------- caps and chunking
+section('end caps and chunking');
+{
+  const grad = new Gradient(defaultState().color.gradient);
+  const makeCurves = (count, n) => {
+    const out = [];
+    for (let c = 0; c < count; c++) {
+      const o = { n, pts: new Float32Array(n * 3), speed: new Float32Array(n) };
+      for (let i = 0; i < n; i++) {
+        o.pts[i * 3] = Math.cos(i * 0.05) + c * 0.01;
+        o.pts[i * 3 + 1] = Math.sin(i * 0.05);
+        o.pts[i * 3 + 2] = i * 0.004 - c * 0.02;
+        o.speed[i] = 1;
+      }
+      out.push(o);
+    }
+    return out;
+  };
+  const baseOpts = {
+    h: 0.02, sides: 6, aspect: 1, width: 0.02, widthMode: 0, widthAmount: 0.5,
+    taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+  };
+
+  // The regression that produced thin gaps across ribbons: the index range for
+  // the first curve in every chunk after the first was recorded against the
+  // previous chunk, giving a bad offset and a negative count, so the depth sort
+  // wrote a short buffer and the rest drew as degenerate triangles.
+  // Enough curves here to force several chunks.
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    // Enough curves to overflow a chunk in this form specifically — the forms
+    // cost 1 to 8 vertices per sample, so a fixed count would leave the cheap
+    // ones in a single chunk and quietly skip the case being tested.
+    const perSample = geomMode === 0 ? 2 : geomMode === 1 ? 6 : geomMode === 3 ? 8 : 1;
+    const SAMPLES = 200;
+    const COUNT = Math.ceil(140000 / (SAMPLES * perSample));
+    for (const caps of [false, true]) {
+      const opts = { ...baseOpts, geomMode, caps };
+      const chunks = buildMesh(prepareCurves(makeCurves(COUNT, SAMPLES), opts, grad), opts);
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: more than one chunk`, chunks.length > 1, `${chunks.length} chunks`);
+
+      let tiles = true, inRange = true, oneRangePerCurve = 0;
+      for (const c of chunks) {
+        let cursor = 0;
+        for (const r of c.ranges) {
+          if (r.start !== cursor || r.count <= 0) tiles = false;
+          cursor += r.count;
+        }
+        if (cursor !== c.indexCount) tiles = false;
+        oneRangePerCurve += c.ranges.length;
+        for (let i = 0; i < c.indices.length; i++) {
+          if (c.indices[i] >= c.vertexCount) inRange = false;
+        }
+      }
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: ranges tile every chunk`, tiles);
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: indices stay inside their chunk`, inRange);
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: one range per curve`, oneRangePerCurve === COUNT,
+        `${oneRangePerCurve} of ${COUNT}`);
+
+      // Every chunk must stay inside the 16-bit index limit, caps included.
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: vertex count fits 16 bits`,
+        chunks.every((c) => c.vertexCount <= 65536), `max ${Math.max(...chunks.map((c) => c.vertexCount))}`);
+
+      // And the reorder must still write exactly one buffer's worth.
+      for (const c of chunks) {
+        let w = 0;
+        for (const r of c.ranges) w += r.count;
+        if (w !== c.indices.length) tiles = false;
+      }
+      ok(`form ${geomMode}${caps ? ' capped' : ''}: the reorder covers the buffer`, tiles);
+    }
+  }
+
+  // Caps add geometry to tubes and boxes, and nothing to ribbons or lines.
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    const plain = buildMesh(prepareCurves(makeCurves(2, 40), { ...baseOpts, geomMode, caps: false }, grad),
+      { ...baseOpts, geomMode, caps: false });
+    const capped = buildMesh(prepareCurves(makeCurves(2, 40), { ...baseOpts, geomMode, caps: true }, grad),
+      { ...baseOpts, geomMode, caps: true });
+    const tris = (cs) => cs.reduce((a, c) => a + c.indexCount, 0);
+    const verts = (cs) => cs.reduce((a, c) => a + c.vertexCount, 0);
+    if (geomMode === 1 || geomMode === 3) {
+      const ring = geomMode === 1 ? 6 : 4;
+      ok(`form ${geomMode}: caps add two fans per curve`,
+        tris(capped) - tris(plain) === 2 * 2 * ring * 3, `${tris(capped) - tris(plain)} indices`);
+      ok(`form ${geomMode}: caps add their own vertices`,
+        verts(capped) - verts(plain) === 2 * 2 * (ring + 1), `${verts(capped) - verts(plain)} vertices`);
+    } else {
+      ok(`form ${geomMode}: caps change nothing`, tris(capped) === tris(plain) && verts(capped) === verts(plain));
+    }
+  }
+
+  // Cap normals must point along the curve, not across it — that is the whole
+  // reason the rim vertices are duplicated instead of reused.
+  {
+    const opts = { ...baseOpts, geomMode: 1, caps: true };
+    const c = buildMesh(prepareCurves(makeCurves(1, 40), opts, grad), opts)[0];
+    let unit = true;
+    for (let i = 0; i < c.vertexCount; i++) {
+      const l = Math.hypot(c.normals[i * 3], c.normals[i * 3 + 1], c.normals[i * 3 + 2]);
+      if (Math.abs(l - 1) > 1e-3) unit = false;
+    }
+    ok('every normal is still unit length with caps on', unit);
+  }
+}
+
 // ---------------------------------------------------------------- new fields
 section('new fields');
 {

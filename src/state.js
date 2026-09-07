@@ -84,6 +84,7 @@ export function defaultState() {
 
     geom: {
       geomMode: 0,            // 0 ribbon, 1 tube, 2 line, 3 box
+      caps: true,             // close the ends of tubes and boxes
       width: 0.012,
       widthMode: 1,
       widthAmount: 0.6,

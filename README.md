@@ -240,6 +240,15 @@ world space (by multiplying the reflection vector on the *right* by the normal
 matrix, which transposes it) so the mirror stays put while you orbit, rather
 than sliding around like a matcap.
 
+One bug worth recording, because it looked like a rendering problem and was not:
+each curve's index range was recorded *before* the chunk-overflow check, so the
+first curve in every chunk after the first stored an offset belonging to the
+previous chunk and a negative length. The depth sort then skipped those indices
+and wrote a short buffer, leaving the tail as degenerate triangles — thin gaps
+cutting across the ribbons, visible only once transparency turned sorting on. On
+the old code an 80-curve tube scene left 358,200 indices unwritten. The tests now
+force several chunks in every form and check the ranges tile each one exactly.
+
 Transparent draws — glass, additive, or any opacity below 1 — are sorted back
 to front by curve. Curves, not triangles: a per-triangle sort is the correct
 answer and far too slow per frame, while no sort at all lets overlapping glass
