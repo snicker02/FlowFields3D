@@ -76,7 +76,7 @@ uniform float uTravelGlow;   // extra brightness at the leading edge
 // behind it; with them off, a curve paints over itself. Splitting the two
 // lets the core write depth and the fringe blend against it.
 uniform float uTravelPass;
-uniform float uTravelDither;  // 1 = stochastic cutout instead of blending
+uniform float uDither;        // 1 = stochastic cutout instead of blending
 
 // Interleaved gradient noise (Jimenez). A dither threshold with no lookup
 // table and no integer bit operations, neither of which GLSL ES 1.0 offers.
@@ -147,13 +147,8 @@ void main() {
       head = 1.0 - clamp((front - vParam.x) / len, 0.0, 1.0);
     }
     if (lit < 0.02) discard;                       // keeps the depth buffer clean
-    if (uTravelDither > 0.5) {
-      // Stochastic cutout: keep or drop the whole fragment against a dither
-      // threshold instead of blending it. Every surviving fragment is opaque,
-      // so depth writes stay on and nothing depends on draw order — no
-      // self-overlap, no sorting, no culling. The tail dissolves as a stipple
-      // that resolves to a smooth fade under antialiasing or supersampling.
-      if (lit < ign(gl_FragCoord.xy)) discard;
+    if (uDither > 0.5) {
+      alpha *= lit;                                // resolved at the end
     } else if (uTravelPass > 1.5) {                // fringe pass
       if (lit > 0.999) discard;
       alpha *= lit;
@@ -234,6 +229,16 @@ void main() {
   float fog = 1.0 - exp(-depth * uFogDensity);
   color = mix(color, uFogColor, clamp(fog, 0.0, 1.0));
   color *= uExposure;
+
+  // Stochastic cutout: keep or drop the whole fragment against a dither
+  // threshold instead of blending it. Every surviving fragment is opaque, so
+  // depth writes stay on and nothing depends on draw order — no self-overlap,
+  // no sorting, no culling, no passes. Translucency dissolves into a stipple
+  // that resolves to a smooth result under antialiasing or supersampling.
+  if (uDither > 0.5) {
+    if (alpha < ign(gl_FragCoord.xy)) discard;
+    alpha = 1.0;
+  }
 
   gl_FragColor = vec4(color, alpha);
 }

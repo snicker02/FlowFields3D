@@ -160,6 +160,7 @@ export function analyse(curves, h) {
  */
 export function prepareCurves(curves, opts, gradient) {
   const imageAt = opts.imageAt || null;
+  const vorticityGain = opts.vorticityGain == null ? 1 : opts.vorticityGain;
   const fit = fitTransform(curves);
   const { center, scale } = fit;
   const stats = analyse(curves, opts.h);
@@ -184,6 +185,7 @@ export function prepareCurves(curves, opts, gradient) {
     const curv = curvatures(tan, n, opts.h * scale);
     const col = new Float32Array(n * 3);
     const wid = new Float32Array(n);
+    let vortAngle = 0;
 
     for (let i = 0; i < n; i++) {
       const i3 = i * 3;
@@ -208,7 +210,12 @@ export function prepareCurves(curves, opts, gradient) {
       }
       wid[i] = Math.max(w, 1e-6);
 
-      const tw = opts.twist * s * Math.PI * 2
+      // Streamribbon: the twist is the integral of the local vorticity along the
+      // curve, so the ribbon reports how the flow rotates rather than however
+      // much twist was dialled in. The manual and noise terms still apply on
+      // top, which is what makes it a mode rather than a replacement.
+      if (c.vort) vortAngle += (i > 0 ? opts.h : 0) * c.vort[i] * vorticityGain;
+      const tw = opts.twist * s * Math.PI * 2 + vortAngle
         + (opts.twistNoise ? opts.twistNoise * auxNoise.noise3(px * 1.7 + 5, py * 1.7, pz * 1.7) * Math.PI * 2 : 0);
       if (tw !== 0) {
         const tx = tan[i3], ty = tan[i3 + 1], tz = tan[i3 + 2];

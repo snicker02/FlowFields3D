@@ -91,6 +91,8 @@ export function defaultState() {
       taperPower: 0.45,
       twist: 0.6,
       twistNoise: 0,
+      streamribbon: false,    // let the flow's own vorticity drive the twist
+      vorticityGain: 1,
       sides: 6,
       aspect: 0.4,
       smoothIters: 1,
@@ -134,10 +136,11 @@ export function defaultState() {
       travelSpeed: 0.25,
       travelPhase: 0,
       travelSoft: 0.6,
-      travelDither: true,     // stochastic cutout: no blending, no ordering
+
       travelStagger: 1,
       travelCount: 4,
       travelGlow: 0.8,
+      dither: true,           // stochastic cutout for every translucency
       sortDepth: true,
       material: 0,            // 0 satin, 1 mirror, 2 glass
       texMode: 0,             // 0 none, 1 bands, 2 stripes, 3 checker, 4 weave, 5 dots, 6 grain, 7 hatch

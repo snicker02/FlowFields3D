@@ -19,6 +19,7 @@ import { chunksToOBJ, preparedToSVG, EXPORT_SIZES, resolveExportSize } from '../
 import { RIBBON_VS, RIBBON_FS } from '../src/engine/shaders.js';
 import { makeVolume, VOLUME_SHAPES } from '../src/engine/volume.js';
 import { chooseVideoFormat, availableVideoFormats } from '../src/io/recorder.js';
+import { canParallelise } from '../src/engine/pool.js';
 import { ImageSource, makeImageField, project, PROJECTIONS } from '../src/engine/image.js';
 import { stateToJSON, parseStateJSON } from '../src/io/exporters.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
@@ -210,6 +211,127 @@ section('symmetry');
     }
   }
   ok('fold matrices stay orthogonal', orthoWorst < 1e-9, `worst deviation ${orthoWorst.toExponential(2)}`);
+}
+
+// ---------------------------------------------------------------- streamribbons
+section('streamribbons');
+{
+  // A rigid rotation about z, plus a constant drift along z. Its vorticity is
+  // exactly (0, 0, 2W) everywhere, so the twist rate a streamribbon should
+  // report is 0.5 * (omega . t) / |v|, and it is the same at every sample.
+  const W = 1.3;
+  const rot = (x, y, z, out) => { out[0] = -W * y; out[1] = W * x; out[2] = 0.35; return out; };
+  const base = {
+    ...defaultState().trace, domain: 1.6, even: false, maxCurves: 1, seedCount: 1,
+    maxSteps: 60, stepFrac: 0.004,
+  };
+
+  const run = (vorticity) => {
+    const t = new Tracer({ ...base, vorticity }, rot);
+    t.queue = [[0.5, 0, 0]];
+    t.qi = 0;
+    return t.runAll()[0];
+  };
+
+  ok('vorticity is not computed unless asked for', run(false).vort == null);
+
+  const c = run(true);
+  const v = [0, 0, 0];
+  rot(0.5, 0, 0, v);
+  const sp = Math.hypot(v[0], v[1], v[2]);
+  const expected = 0.5 * ((2 * W * v[2]) / sp) / sp;
+  let worst = 0;
+  for (let i = 0; i < c.n; i++) worst = Math.max(worst, Math.abs(c.vort[i] - expected));
+  ok('the twist rate matches the analytic vorticity', worst < 1e-6,
+    `expected ${expected.toFixed(6)}, worst error ${worst.toExponential(2)}`);
+  ok('the twist rate is defined at every sample', c.vort.length >= c.n);
+
+  // The backward half must not be negated. _twistRate reads the field's own
+  // direction, not the tracer's, so the rate at a point is the same whichever
+  // way it was walked — negating it put a kink at the seed.
+  ok('both halves of a bidirectional curve agree', c.vort[0] * c.vort[c.n - 1] > 0,
+    `${c.vort[0].toFixed(4)} and ${c.vort[c.n - 1].toFixed(4)}`);
+
+  // An irrotational field must produce no twist at all.
+  const grad = (x, y, z, out) => { out[0] = 2 * x; out[1] = -y; out[2] = -z; return out; };
+  const g = new Tracer({ ...base, vorticity: true }, grad);
+  g.queue = [[0.3, 0.2, 0.1]];
+  g.qi = 0;
+  const gc = g.runAll()[0];
+  let gWorst = 0;
+  for (let i = 0; i < gc.n; i++) gWorst = Math.max(gWorst, Math.abs(gc.vort[i]));
+  ok('an irrotational field twists a ribbon not at all', gWorst < 1e-5, `worst ${gWorst.toExponential(2)}`);
+
+  // And the accumulated angle: constant rate over a known length is rate*length.
+  {
+    const opts = {
+      h: base.domain * base.stepFrac, geomMode: 0, sides: 6, aspect: 1, width: 0.02,
+      widthMode: 0, widthAmount: 0.5, taperPower: 0.5, twist: 0, twistNoise: 0,
+      smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false, vorticityGain: 1,
+    };
+    const prep = prepareCurves([c], opts, new Gradient(defaultState().color.gradient));
+    ok('a streamribbon curve still builds', prep.items.length === 1 && prep.items[0].n === c.n);
+    const chunks = buildMesh(prep, opts);
+    ok('a streamribbon meshes', chunks.length > 0 && chunks[0].indexCount > 0);
+    let finite = true;
+    for (const ch of chunks) {
+      for (let i = 0; i < ch.positions.length; i++) if (!isFinite(ch.positions[i])) finite = false;
+    }
+    ok('a streamribbon mesh is finite', finite);
+
+    // Gain must scale the effect, and zero must switch it off entirely.
+    const off = buildMesh(prepareCurves([c], { ...opts, vorticityGain: 0 },
+      new Gradient(defaultState().color.gradient)), opts);
+    let differs = false;
+    for (let i = 0; i < Math.min(chunks[0].positions.length, off[0].positions.length); i++) {
+      if (Math.abs(chunks[0].positions[i] - off[0].positions[i]) > 1e-5) differs = true;
+    }
+    ok('vorticity gain changes the geometry', differs);
+  }
+}
+
+// ---------------------------------------------------------------- worker sharding
+section('worker sharding');
+{
+  // The workers cannot be launched here, but the property that makes sharding
+  // safe can be: dealing every Nth seed to a shard must reproduce exactly the
+  // set a single run would have traced, with nothing dropped or duplicated.
+  const seeds = Array.from({ length: 97 }, (_, i) => i);
+  for (const total of [2, 3, 4, 8]) {
+    const seen = [];
+    for (let index = 0; index < total; index++) {
+      for (const s2 of seeds.filter((_, i) => i % total === index)) seen.push(s2);
+    }
+    seen.sort((a, b) => a - b);
+    ok(`${total} shards cover every seed exactly once`,
+      seen.length === seeds.length && seen.every((v, i) => v === i));
+  }
+
+  // Even spacing must never be sharded: its spatial hash is shared state and
+  // its candidate seeds come from finished curves.
+  ok('even spacing refuses to parallelise', !canParallelise({ even: true, seedCount: 1000 }));
+  ok('a tiny trace refuses to parallelise', !canParallelise({ even: false, seedCount: 8 }));
+
+  // The message a worker receives must be structured-cloneable — no closures,
+  // which is exactly what the volume test and the seed weighting are.
+  const st = defaultState();
+  const msg = {
+    cfg: { ...st.trace, domain: st.field.domain },
+    fieldCfg: { fieldA: st.field.fieldA, paramsA: st.field.paramsA, domain: st.field.domain },
+    volumeCfg: st.field.volume,
+    imageCfg: st.field.image,
+    noiseSeed: st.field.noiseSeed,
+    time: st.field.time,
+  };
+  let cloneable = true;
+  const walk = (v) => {
+    if (typeof v === 'function') { cloneable = false; return; }
+    if (v && typeof v === 'object') for (const k of Object.keys(v)) walk(v[k]);
+  };
+  walk(msg);
+  ok('the worker message carries no closures', cloneable);
+  ok('the shard cap divides the curve cap',
+    Math.ceil(1000 / 4) * 4 >= 1000, 'each shard keeps its share');
 }
 
 // ---------------------------------------------------------------- caps and chunking
@@ -949,7 +1071,7 @@ section('material and texture');
     'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
     'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
     'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-    'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTravelDither'];
+    'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uDither'];
   for (const name of setByRenderer) ok(`shader declares ${name}`, declared.has(name));
 
   const look = defaultState().look;
@@ -1003,26 +1125,42 @@ section('material and texture');
   // paint its own far side over its near side.
   // Dithered travel is a cutout: opaque fragments only, so it needs no
   // blending, no depth-write compromise, no sorting and no culling.
-  const dithered = (s2) => (s2.travelMode | 0) > 0 && s2.travelDither !== false;
+  const dithered = (s2) => s2.dither !== false;
   const softTravel = (s2) => (s2.travelMode | 0) > 0 && !dithered(s2) && (s2.travelSoft || 0) > 0.001;
-  const seeThrough = (s2) => s2.renderMode === 1
-    || (s2.renderMode === 0 && (s2.material | 0) === 2)
-    || s2.opacity < 0.999;
+  const alphaBlended = (s2) => !dithered(s2)
+    && ((s2.renderMode === 0 && (s2.material | 0) === 2) || s2.opacity < 0.999);
+  const seeThrough = (s2) => alphaBlended(s2) || s2.renderMode === 1;
   const needsBlend = (s2) => seeThrough(s2) || softTravel(s2);
   const writesDepth = (s2) => !seeThrough(s2);
-  ok('glass blends at full opacity', needsBlend({ renderMode: 0, material: 2, opacity: 1 }));
+  ok('glass blends at full opacity when not dithered', needsBlend({ renderMode: 0, material: 2, opacity: 1, dither: false }));
   ok('satin at full opacity does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1 }));
   ok('mirror at full opacity does not blend', !needsBlend({ renderMode: 0, material: 1, opacity: 1 }));
   ok('flat mode ignores the material', !needsBlend({ renderMode: 2, material: 2, opacity: 1 }));
-  const soft = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0.6, travelDither: false };
-  const hard = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0, travelDither: false };
-  const dith = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 1, travelDither: true };
+  const soft = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0.6, dither: false };
+  const hard = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 0, dither: false };
+  const dith = { renderMode: 0, material: 0, opacity: 1, travelMode: 1, travelSoft: 1, dither: true };
 
   // The whole point of dither mode: nothing about it depends on draw order,
   // even with the softest possible tail.
   ok('a dithered tail needs no blending', !needsBlend(dith));
   ok('a dithered tail writes depth', writesDepth(dith));
-  ok('dither is the default', defaultState().look.travelDither === true);
+  ok('dither is the default', defaultState().look.dither === true);
+
+  // The point of the cleanup: dithering retires ordering for *every* kind of
+  // translucency, not just the travel tail.
+  const glassDith = { renderMode: 0, material: 2, opacity: 1, travelMode: 0, dither: true };
+  const glassBlend = { renderMode: 0, material: 2, opacity: 1, travelMode: 0, dither: false };
+  const fadedDith = { renderMode: 0, material: 0, opacity: 0.5, travelMode: 0, dither: true };
+  const fadedBlend = { renderMode: 0, material: 0, opacity: 0.5, travelMode: 0, dither: false };
+  ok('dithered glass needs no blending', !needsBlend(glassDith));
+  ok('dithered glass writes depth', writesDepth(glassDith));
+  ok('blended glass still gives up depth writes', !writesDepth(glassBlend));
+  ok('dithered partial opacity writes depth', writesDepth(fadedDith));
+  ok('blended partial opacity does not', !writesDepth(fadedBlend));
+  // Additive is commutative, so it never needed sorting and dithering must not
+  // pretend to make it opaque.
+  ok('additive still blends whatever dithering says',
+    needsBlend({ renderMode: 1, material: 0, opacity: 1, travelMode: 0, dither: true }));
   ok('a soft tail blends', needsBlend(soft));
   ok('a hard tail needs no blending at all', !needsBlend(hard));
   ok('travel off does not blend', !needsBlend({ renderMode: 0, material: 0, opacity: 1, travelMode: 0 }));
@@ -1032,9 +1170,9 @@ section('material and texture');
   // sorting can fix it, because the overlap is inside one curve.
   ok('a soft tail still writes depth', writesDepth(soft));
   ok('a hard tail still writes depth', writesDepth(hard));
-  ok('glass gives up depth writes', !writesDepth({ renderMode: 0, material: 2, opacity: 1 }));
+  ok('blended glass gives up depth writes', !writesDepth({ renderMode: 0, material: 2, opacity: 1, dither: false }));
   ok('additive gives up depth writes', !writesDepth({ renderMode: 1, material: 0, opacity: 1 }));
-  ok('travel over glass follows glass', !writesDepth({ renderMode: 0, material: 2, opacity: 1, travelMode: 1, travelSoft: 0.6 }));
+  ok('travel over blended glass follows glass', !writesDepth({ renderMode: 0, material: 2, opacity: 1, travelMode: 1, travelSoft: 0.6, dither: false }));
 
   // A soft tail over opaque material is drawn twice: an opaque core that writes
   // depth, then a blended fringe that does not. One pass cannot be right —

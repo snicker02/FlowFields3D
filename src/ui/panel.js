@@ -114,6 +114,8 @@ export const SCHEMA = [
       { type: 'select', path: 'geom.widthMode', label: 'Width varies', options: WIDTH_MODES, level: 'geom' },
       { type: 'slider', path: 'geom.widthAmount', label: 'Width amount', min: 0, max: 1, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.taperPower', label: 'Taper sharpness', min: 0.05, max: 3, step: 0.01, level: 'geom' },
+      { type: 'toggle', path: 'geom.streamribbon', label: 'Streamribbon (twist = vorticity)', level: 'trace' },
+      { type: 'slider', path: 'geom.vorticityGain', label: 'Vorticity gain', min: -3, max: 3, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.twist', label: 'Twist turns', min: -6, max: 6, step: 0.01, level: 'geom' },
       { type: 'slider', path: 'geom.twistNoise', label: 'Twist noise', min: 0, max: 2, step: 0.01, level: 'geom' },
       { type: 'toggle', path: 'geom.caps', label: 'Close the ends', level: 'geom' },
@@ -158,6 +160,7 @@ export const SCHEMA = [
   {
     title: 'Material and texture', open: false, controls: [
       { type: 'select', path: 'look.material', label: 'Material', options: ['Satin', 'Mirror', 'Glass'], level: 'none' },
+      { type: 'toggle', path: 'look.dither', label: 'Dithered transparency', level: 'none' },
       { type: 'toggle', path: 'look.sortDepth', label: 'Depth sort transparency', level: 'none' },
       { type: 'select', path: 'look.texMode', label: 'Texture', options: ['None', 'Cross bands', 'Lengthwise stripes', 'Checker', 'Weave', 'Dots', 'Grain', 'Diagonal hatch', 'Loaded image'], level: 'none' },
       { type: 'slider', path: 'look.texScale', label: 'Repeats along', min: 1, max: 120, step: 1, level: 'none' },
@@ -204,7 +207,6 @@ export const SCHEMA = [
       { type: 'slider', path: 'look.travelCount', label: 'Dashes per curve', min: 1, max: 24, step: 1, level: 'draw' },
       { type: 'slider', path: 'look.travelStagger', label: 'Stagger between curves', min: 0, max: 1, step: 0.005, level: 'draw' },
       { type: 'slider', path: 'look.travelSoft', label: 'Tail softness', min: 0, max: 1, step: 0.005, level: 'draw' },
-      { type: 'toggle', path: 'look.travelDither', label: 'Dithered tail', level: 'draw' },
       { type: 'slider', path: 'look.travelGlow', label: 'Head glow', min: 0, max: 3, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'look.autoRotate', label: 'Auto-rotate', min: -1, max: 1, step: 0.01, level: 'draw' },
       { type: 'slider', path: 'camera.fov', label: 'Field of view', min: 12, max: 100, step: 1, level: 'draw' },

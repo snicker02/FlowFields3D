@@ -185,14 +185,19 @@ its twin survives, sawtoothing the whole form.
 Three fixes, three new artifacts, all from the same root cause: a blended tail
 is order-dependent, and no amount of sorting fixes overlap *within* one curve.
 
-So the tail is not blended at all by default. **Dithered tail** keeps or drops
-each fragment whole against an interleaved-gradient-noise threshold — a
+So nothing is blended at all by default. **Dithered transparency** keeps or
+drops each fragment whole against an interleaved-gradient-noise threshold — a
 stochastic cutout. Every surviving fragment is opaque, so depth writes stay on
 and nothing depends on draw order: no self-overlap, no sorting, no culling, no
-passes. The tail dissolves as a stipple that resolves to a smooth fade under
+passes. It applies to the travel tail, to glass, and to any opacity below 1;
+translucency dissolves into a stipple that resolves to a smooth result under
 antialiasing, and cleanly at export resolutions where supersampling is doing the
-work anyway. Turning it off restores the two-pass blended path, which is
-slightly smoother at 1x and carries the ordering caveats above.
+work anyway. Turning it off restores the blended paths, which are slightly
+smoother at 1x and carry the ordering caveats above.
+
+Additive is the exception and never needed any of this: adding is commutative,
+so its result does not depend on draw order. It gives up depth writes on
+purpose.
 
 
 What is *not* animated is field evolution. Several fields take `time`, but
@@ -349,6 +354,26 @@ Three gates:
    context, which is the same profile WebGL1 exposes. Needs `pip install
    PyOpenGL` and Mesa; skipped with a note if they are missing. A deliberately
    broken shader is included, and the run fails if the driver accepts it.
+
+## Parallel tracing
+
+Streamlines are independent, so the seeds are dealt out across
+`hardwareConcurrency - 1` workers (capped at eight). Each worker rebuilds the
+*same* evaluator from the same serialised config and takes every Nth seed, which
+makes the parallel result identical to the single-threaded one rather than
+merely similar.
+
+Two things are deliberately not sharded. Even spacing is sequential by
+construction — its whole mechanism is a shared spatial hash that every curve
+reads and writes as it goes, plus candidate seeds spawned from finished curves —
+so it falls back to the time-sliced tracer on the main thread. And traces under
+64 seeds are not worth the message round trip.
+
+Closures cannot cross to a worker, so the volume test and the image seed
+weighting are sent as config and rebuilt on the other side; the image goes over
+as its raw luminance rather than being decoded twice. If module workers are
+unavailable — opening the page over `file://`, mostly — the first failure falls
+back permanently for the session rather than retrying every trace.
 
 ## Performance
 

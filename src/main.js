@@ -12,6 +12,7 @@ import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
 import { foldStepScale } from './engine/fractal.js';
 import { recordFrames, chooseVideoFormat, availableVideoFormats } from './io/recorder.js';
 import { makeVolume } from './engine/volume.js';
+import { canParallelise, parallelTrace, workerCount } from './engine/pool.js';
 import { ImageSource, makeImageField, toPowerOfTwoCanvas, readImageFile } from './engine/image.js';
 import { Tracer } from './engine/integrator.js';
 import { prepareCurves, buildMesh } from './engine/geometry.js';
@@ -35,6 +36,8 @@ const app = {
   prepared: null,
   chunks: [],
   tracer: null,
+  traceToken: 0,
+  parallelBroken: false,
   image: null,          // ImageSource, once one is loaded
   history: [],          // undo ring
   future: [],           // redo stack
@@ -141,6 +144,7 @@ function traceConfig() {
     stepFrac: s.trace.stepFrac / foldStepScale(s.field.fractal),
     inside: makeVolume(s.field.volume, s.field.domain),
     seedWeight: imageSeedWeight(),
+    vorticity: !!s.geom.streamribbon,
   };
 }
 
@@ -167,10 +171,64 @@ function startTrace() {
     setStatus(`Could not build the field: ${e.message}`);
     return;
   }
-  app.tracer = new Tracer(traceConfig(), evaluate);
+  const cfg = traceConfig();
   app.traceStart = performance.now();
   app.pendingTrace = false;
   progressEl.classList.add('busy');
+
+  if (!app.parallelBroken && canParallelise(cfg)) {
+    // The workers rebuild the field from the same config, so this is the same
+    // trace, dealt out. Anything that goes wrong falls back to tracing here.
+    const token = ++app.traceToken;
+    app.tracer = null;
+    setStatus(`Tracing on ${workerCount()} workers...`);
+    parallelTrace(workerMessage(cfg), (f) => {
+      if (token === app.traceToken) progressBar.style.width = (f * 100).toFixed(1) + '%';
+    }).then((curves) => {
+      if (token !== app.traceToken) return;      // superseded by a newer trace
+      app.curves = curves;
+      app.lastTraceMs = performance.now() - app.traceStart;
+      progressEl.classList.remove('busy');
+      progressBar.style.width = '0%';
+      rebuildGeometry();
+    }).catch(() => {
+      if (token !== app.traceToken) return;
+      app.parallelBroken = true;                 // do not keep retrying
+      app.tracer = new Tracer(cfg, evaluate);
+    });
+    return;
+  }
+
+  app.tracer = new Tracer(cfg, evaluate);
+}
+
+/** Everything a worker needs to rebuild this trace from scratch. */
+function workerMessage(cfg) {
+  const s = app.state;
+  const plain = { ...cfg };
+  delete plain.inside;                            // closures do not survive the trip
+  delete plain.seedWeight;
+  const img = app.image;
+  const weight = s.field.image.enabled && img && s.field.image.seedPower > 0
+    ? { floor: Math.max(0, Math.min(1, s.field.image.seedFloor)), power: s.field.image.seedPower }
+    : null;
+  return {
+    cfg: plain,
+    fieldCfg: {
+      fieldA: s.field.fieldA, paramsA: s.field.paramsA,
+      fieldB: s.field.fieldB, paramsB: s.field.paramsB,
+      blend: s.field.blend, blendMode: s.field.blendMode,
+      symmetry: s.field.symmetry, fractal: s.field.fractal,
+      warp: s.field.warp, warpScale: s.field.warpScale,
+      swirl: s.field.swirl, drift: s.field.drift, domain: s.field.domain,
+    },
+    volumeCfg: s.field.volume,
+    imageCfg: s.field.image,
+    seedWeightCfg: weight,
+    image: img ? { width: img.width, height: img.height, lum: img.lum } : null,
+    noiseSeed: s.field.noiseSeed,
+    time: s.field.time,
+  };
 }
 
 function finishTrace() {

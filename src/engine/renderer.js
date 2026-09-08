@@ -52,7 +52,7 @@ export class Renderer {
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uTravelDither', 'uTexImage', 'uTexHasImage']);
+      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uDither', 'uTexImage', 'uTexHasImage']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
@@ -157,16 +157,25 @@ export class Renderer {
     // and per-curve sorting cannot help inside a single curve. On a coiled tube
     // that shows as fine combing where it crosses itself. So travel keeps depth
     // writes on, and blends only when the tail is soft.
+    // One switch for every kind of translucency this renderer produces. A
+    // dithered fragment is opaque or absent, so the whole class of
+    // ordering artifacts — a curve blending through itself, a fringe hiding
+    // what is behind it, sorting that can only work between curves and not
+    // within one — stops existing rather than being compensated for.
+    const dither = style.dither !== false;
     const travelling = (style.travelMode | 0) > 0;
-    const dither = travelling && style.travelDither !== false;
     const travelSoft = travelling && !dither && style.travelSoft > 0.001;
-    const seeThrough = glass || additive || style.opacity < 0.999;
-    const needsSort = !!style.sortDepth && !!look.viewDir && (seeThrough || travelSoft);
+    // Additive blending is commutative, so it never needed sorting; it gives up
+    // depth writes on purpose. Everything else is order-dependent only when it
+    // actually blends.
+    const alphaBlended = !dither && (glass || style.opacity < 0.999);
+    const seeThrough = alphaBlended || additive;
+    const needsSort = !!style.sortDepth && !!look.viewDir && (alphaBlended || travelSoft);
     if (additive) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
       gl.depthMask(false);
-    } else if (glass || style.opacity < 0.999) {
+    } else if (alphaBlended) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);

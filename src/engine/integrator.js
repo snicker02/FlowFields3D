@@ -147,6 +147,9 @@ export class Tracer {
     // image value raised to a power, using a hash of the position rather than a
     // running generator so the same seed set comes back every trace.
     this.seedWeight = cfg.seedWeight || null;
+    this.vorticity = !!cfg.vorticity;
+    this._va = [0, 0, 0];
+    this._vb = [0, 0, 0];
     let seeds = makeSeeds(cfg.seedMode, cfg.seedCount, R, cfg.seed, cfg.jitter);
     if (this.seedWeight) seeds = seeds.filter((s2) => this._weighted(s2));
     if (this.inside) {
@@ -161,6 +164,13 @@ export class Tracer {
         }
       }
       seeds = kept;
+    }
+    // A worker takes every Nth seed. Slicing the *generated* list rather than
+    // generating a different list per shard is what keeps the parallel result
+    // identical to the single-threaded one.
+    if (cfg.seedSlice && cfg.seedSlice.total > 1) {
+      const { index, total } = cfg.seedSlice;
+      seeds = seeds.filter((_, i) => i % total === index);
     }
     this.queue = seeds;
     this.qi = 0;
@@ -216,17 +226,23 @@ export class Tracer {
 
     const pts = new Float32Array(n * 3);
     const speed = new Float32Array(n);
+    const vort = this.vorticity ? new Float32Array(n) : null;
     for (let i = 0; i < nb; i++) {                    // backward half, reversed
       const j = nb - 1 - i;
       pts[i * 3] = back.pts[j * 3]; pts[i * 3 + 1] = back.pts[j * 3 + 1]; pts[i * 3 + 2] = back.pts[j * 3 + 2];
       speed[i] = back.speed[j];
+      // Not negated: _twistRate reads the field's own direction, v/|v|, not the
+      // direction of integration, so the rate at a point is the same whichever
+      // way the tracer walked through it.
+      if (vort && back.vort) vort[i] = back.vort[j];
     }
     for (let i = 0; i < fwd.n; i++) {
       const k = nb + i;
       pts[k * 3] = fwd.pts[i * 3]; pts[k * 3 + 1] = fwd.pts[i * 3 + 1]; pts[k * 3 + 2] = fwd.pts[i * 3 + 2];
       speed[k] = fwd.speed[i];
+      if (vort && fwd.vort) vort[k] = fwd.vort[i];
     }
-    return { pts, speed, n, rnd: this.rnd(), id: curveId, length: (n - 1) * this.h };
+    return { pts, speed, vort, n, rnd: this.rnd(), id: curveId, length: (n - 1) * this.h };
   }
 
   _integrate(seed, dir, curveId) {
@@ -235,6 +251,9 @@ export class Tracer {
     const maxN = cfg.maxSteps;
     const pts = new Float32Array(maxN * 3);
     const speed = new Float32Array(maxN);
+    // Local twist rate, for streamribbons. Only allocated when asked for: it
+    // costs six extra field evaluations per sample on top of RK4's four.
+    const vort = this.vorticity ? new Float32Array(maxN) : null;
     const p = this._p, q = this._q;
     p[0] = seed[0]; p[1] = seed[1]; p[2] = seed[2];
     let n = 0;
@@ -247,6 +266,7 @@ export class Tracer {
       if (cfg.integrator === 1) sp = eulerStep(this.evaluate, p, h, q, this._k1);
       else sp = rk4Step(this.evaluate, p, h, q, this._k1, this._k2, this._k3, this._k4, this._tmp);
       speed[n] = sp;
+      if (vort) vort[n] = this._twistRate(p, sp);
       if (sp <= cfg.minSpeed) { n++; break; }
       if (!isFinite(q[0]) || !isFinite(q[1]) || !isFinite(q[2])) { n++; break; }
       if (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] > b2) { n++; break; }
@@ -256,7 +276,36 @@ export class Tracer {
       p[0] = q[0]; p[1] = q[1]; p[2] = q[2];
     }
     if (useEven && n > 0) this.hash.insert(pts[(n - 1) * 3], pts[(n - 1) * 3 + 1], pts[(n - 1) * 3 + 2], curveId, n - 1);
-    return { pts, speed, n };
+    return { pts, speed, n, vort };
+  }
+
+  /**
+   * The rate a streamribbon twists, per unit arclength.
+   *
+   * A ribbon released into a flow rotates about its own streamline at half the
+   * component of the vorticity along that streamline — that is the definition
+   * of local angular velocity for a fluid element. Dividing by the speed turns
+   * radians per unit *time* into radians per unit *length*, which is what the
+   * mesh builder needs, since it walks the curve by distance.
+   *
+   * Six evaluations for the curl by central differences, on top of RK4's four.
+   */
+  _twistRate(p, sp) {
+    const e = this.h * 0.5;
+    const a = this._va, b = this._vb, t = this._k1;
+    this.evaluate(p[0], p[1], p[2], t);
+    const tl = Math.hypot(t[0], t[1], t[2]) || 1e-9;
+
+    this.evaluate(p[0], p[1] + e, p[2], a); this.evaluate(p[0], p[1] - e, p[2], b);
+    const dvz_dy = (a[2] - b[2]) / (2 * e), dvx_dy = (a[0] - b[0]) / (2 * e);
+    this.evaluate(p[0], p[1], p[2] + e, a); this.evaluate(p[0], p[1], p[2] - e, b);
+    const dvx_dz = (a[0] - b[0]) / (2 * e), dvy_dz = (a[1] - b[1]) / (2 * e);
+    this.evaluate(p[0] + e, p[1], p[2], a); this.evaluate(p[0] - e, p[1], p[2], b);
+    const dvy_dx = (a[1] - b[1]) / (2 * e), dvz_dx = (a[2] - b[2]) / (2 * e);
+
+    const wx = dvz_dy - dvy_dz, wy = dvx_dz - dvz_dx, wz = dvy_dx - dvx_dy;
+    const along = (wx * t[0] + wy * t[1] + wz * t[2]) / tl;
+    return 0.5 * along / Math.max(1e-6, sp);
   }
 
   /** Jobard–Lefebvre candidate seeding, generalised to 3D: offset perpendicular
