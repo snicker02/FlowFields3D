@@ -20,6 +20,9 @@ import { RIBBON_VS, RIBBON_FS } from '../src/engine/shaders.js';
 import { makeVolume, VOLUME_SHAPES } from '../src/engine/volume.js';
 import { chooseVideoFormat, availableVideoFormats } from '../src/io/recorder.js';
 import { canParallelise } from '../src/engine/pool.js';
+import { computeOcclusion } from '../src/engine/geometry.js';
+import { halton, diskSample, sphereSample, coneSample, lightMatrix } from '../src/engine/rt.js';
+import { OrbitCamera } from '../src/engine/camera.js';
 import { ImageSource, makeImageField, project, PROJECTIONS } from '../src/engine/image.js';
 import { stateToJSON, parseStateJSON } from '../src/io/exporters.js';
 import { SCHEMA, getPath, setPath } from '../src/ui/panel.js';
@@ -1057,6 +1060,383 @@ section('video export');
   ok('depth sorting is on by default', look.sortDepth === true);
 }
 
+// ---------------------------------------------------------------- fog
+section('fog');
+{
+  // Transcribed from renderer.js and the fragment shader. The point of the
+  // change this tests: fog is measured from the near edge of the subject, not
+  // from the world origin, and the subject is always the fitted unit ball.
+  const fogStartWorld = (camDist, fogBegin) => Math.max(0, camDist - 1) + fogBegin * 2;
+  const fogAt = (camDist, fogBegin, density, viewZ) =>
+    1 - Math.exp(-Math.max(0, viewZ - fogStartWorld(camDist, fogBegin)) * density);
+  // The nearest and farthest points of the unit ball along the view axis.
+  const nearFog = (d, b, den) => fogAt(d, b, den, d - 1);
+  const farFog = (d, b, den) => fogAt(d, b, den, d + 1);
+
+  // The bug: an absolute start left the nearest geometry already fogged, so
+  // most of the effect was a flat wash rather than a depth cue.
+  for (const d of [1.2, 1.6, 2.4, 3.2, 6, 12]) {
+    ok(`at distance ${d} the front of the subject is unfogged`,
+      nearFog(d, 0, 0.5) < 1e-12, `${(nearFog(d, 0, 0.5) * 100).toFixed(2)}%`);
+  }
+
+  // And the other half: it meant something different at every zoom level.
+  // Now the same settings give the same picture however far out the camera is.
+  {
+    let worst = 0;
+    const ref = farFog(3.2, 0, 0.5);
+    for (const d of [1.2, 1.6, 2.4, 3.2, 6, 12]) worst = Math.max(worst, Math.abs(farFog(d, 0, 0.5) - ref));
+    ok('fog is the same at every zoom level', worst < 1e-12, `worst drift ${worst.toExponential(2)}`);
+    ok('the far edge actually fogs', ref > 0.6, `${(ref * 100).toFixed(1)}%`);
+  }
+
+  // The control has to span nothing to almost everything, or it is not usable.
+  {
+    const lo = farFog(3.2, 0, 0.02), hi = farFog(3.2, 0, 3);
+    ok('the density range reaches both ends', lo < 0.05 && hi > 0.99,
+      `${(lo * 100).toFixed(1)}% .. ${(hi * 100).toFixed(2)}%`);
+    const d = defaultState().look;
+    const def = farFog(3.2, d.fogBegin, d.fogDensity);
+    ok('the default is a visible gradient, not a wash', def > 0.3 && def < 0.75,
+      `0% -> ${(def * 100).toFixed(1)}%`);
+  }
+
+  // fogBegin pushes the fade back into the scene, and 1 switches it off.
+  {
+    const a = farFog(3.2, 0, 0.5), b = farFog(3.2, 0.5, 0.5), c = farFog(3.2, 1, 0.5);
+    ok('fog begins later as the control rises', a > b && b > c,
+      `${(a * 100).toFixed(1)}% > ${(b * 100).toFixed(1)}% > ${(c * 100).toFixed(1)}%`);
+    ok('fully delayed fog is no fog', c < 1e-12);
+  }
+
+  // Density 0 must be exactly off, whatever else is set.
+  ok('zero density is no fog', farFog(3.2, 0, 0) === 0 && nearFog(1.2, 0, 0) === 0);
+
+  // Camera inside the subject: the near edge clamps at the eye rather than
+  // going negative and pulling fog forward of the camera.
+  ok('fog survives the camera being inside the scene',
+    fogStartWorld(0.4, 0) === 0 && fogAt(0.4, 0, 0.5, 0.1) > 0);
+
+  const look = defaultState().look;
+  ok('state has look.fogBegin', look.fogBegin !== undefined && isFinite(look.fogBegin));
+  ok('the old absolute fog start is gone', look.fogStart === undefined);
+}
+
+// ---------------------------------------------------------------- strands and occlusion
+section('strand shading and occlusion');
+{
+  // Tangents must be unit length and must actually follow the curve, or the
+  // anisotropic highlight points somewhere arbitrary and looks like noise.
+  const grad = new Gradient(defaultState().color.gradient);
+  const n = 60;
+  const helix = { n, pts: new Float32Array(n * 3), speed: new Float32Array(n) };
+  for (let i = 0; i < n; i++) {
+    helix.pts[i * 3] = Math.cos(i * 0.2);
+    helix.pts[i * 3 + 1] = Math.sin(i * 0.2);
+    helix.pts[i * 3 + 2] = i * 0.05;
+    helix.speed[i] = 1;
+  }
+  const baseOpts = {
+    h: 0.02, sides: 6, aspect: 1, width: 0.03, widthMode: 0, widthAmount: 0.5,
+    taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
+  };
+
+  for (let geomMode = 0; geomMode < GEOM_MODES.length; geomMode++) {
+    const opts = { ...baseOpts, geomMode, caps: true };
+    const chunks = buildMesh(prepareCurves([helix], opts, grad), opts);
+    let unit = true, perpendicular = true;
+    for (const c of chunks) {
+      for (let i = 0; i < c.vertexCount; i++) {
+        const tx = c.tangents[i * 3], ty = c.tangents[i * 3 + 1], tz = c.tangents[i * 3 + 2];
+        if (Math.abs(Math.hypot(tx, ty, tz) - 1) > 1e-3) unit = false;
+        // On a ribbon or tube wall the surface normal is perpendicular to the
+        // curve direction; on the end caps the normal *is* the tangent, so
+        // those are skipped by only checking where they differ.
+        const nx = c.normals[i * 3], ny = c.normals[i * 3 + 1], nz = c.normals[i * 3 + 2];
+        const d = Math.abs(tx * nx + ty * ny + tz * nz);
+        if (d > 0.02 && d < 0.98) perpendicular = false;
+      }
+    }
+    ok(`form ${geomMode}: tangents are unit length`, unit);
+    ok(`form ${geomMode}: tangents are square to the surface or along it`, perpendicular);
+  }
+
+  // The tangent must track the curve, not sit frozen: on a helix it rotates.
+  {
+    const opts = { ...baseOpts, geomMode: 0 };
+    const c = buildMesh(prepareCurves([helix], opts, grad), opts)[0];
+    const first = [c.tangents[0], c.tangents[1], c.tangents[2]];
+    const last = [c.tangents[(c.vertexCount - 1) * 3], c.tangents[(c.vertexCount - 1) * 3 + 1],
+      c.tangents[(c.vertexCount - 1) * 3 + 2]];
+    const dot = first[0] * last[0] + first[1] * last[1] + first[2] * last[2];
+    ok('the tangent follows the curve', dot < 0.9, `ends differ, cos = ${dot.toFixed(4)}`);
+  }
+
+  // Occlusion. A lone curve in open space must come out near zero; the same
+  // curve inside a dense bundle must come out high. That ordering is the whole
+  // claim, and it is what a shadow map could not deliver at this scale.
+  {
+    const makeLine = (ox, oy) => {
+      const m = 80;
+      const o = { n: m, pts: new Float32Array(m * 3), speed: new Float32Array(m) };
+      for (let i = 0; i < m; i++) {
+        o.pts[i * 3] = ox;
+        o.pts[i * 3 + 1] = oy;
+        o.pts[i * 3 + 2] = (i / (m - 1)) * 2 - 1;
+        o.speed[i] = 1;
+      }
+      return o;
+    };
+    const bundle = [];
+    for (let i = -3; i <= 3; i++) {
+      for (let j = -3; j <= 3; j++) bundle.push(makeLine(i * 0.02, j * 0.02));
+    }
+    const lonely = makeLine(5, 5);              // far away from the bundle
+    const curves = [...bundle, lonely];
+    const occ = computeOcclusion(curves, 0.1, 1);
+
+    ok('occlusion returns one array per curve', occ.length === curves.length);
+    ok('every value is in 0..1', occ.every((a) => Array.from(a).every((v) => v >= 0 && v <= 1)));
+
+    const mid = (a) => a[Math.floor(a.length / 2)];
+    const centre = mid(occ[bundle.length >> 1]);
+    const alone = mid(occ[occ.length - 1]);
+    ok('a curve inside a bundle is occluded', centre > 0.5, `${centre.toFixed(3)}`);
+    ok('a curve on its own is not', alone < 0.02, `${alone.toFixed(4)}`);
+    ok('the bundle is more occluded than the loner', centre > alone + 0.4,
+      `${centre.toFixed(3)} vs ${alone.toFixed(4)}`);
+
+    // Edges of the bundle must be less occluded than its middle, or the result
+    // is a flat tint rather than shading.
+    const edge = mid(occ[0]);
+    ok('the edge of a bundle is lighter than its core', edge < centre - 0.05,
+      `edge ${edge.toFixed(3)} vs core ${centre.toFixed(3)}`);
+
+    // A curve must not occlude itself: without the skip, this would just
+    // measure the integration step.
+    const single = computeOcclusion([makeLine(0, 0)], 0.1, 1);
+    ok('a curve does not occlude itself', mid(single[0]) < 1e-6, `${mid(single[0])}`);
+
+    // Radius monotonicity is a property of the raw neighbourhood measure, not
+    // of the returned values: those are normalised against the densest point
+    // in the scene, so shrinking the radius moves the yardstick too.
+    const hash = new SpatialHash(0.1);
+    for (let c = 0; c < curves.length; c++) {
+      const k = curves[c];
+      for (let i = 0; i < k.n; i++) hash.insert(k.pts[i * 3], k.pts[i * 3 + 1], k.pts[i * 3 + 2], c, i);
+    }
+    const probe = (d) => hash.densityAt(0, 0, 0, d, -1, 0, 0);
+    ok('a larger radius finds more neighbours', probe(0.03) < probe(0.1) && probe(0.1) < probe(0.2),
+      `${probe(0.03).toFixed(3)} < ${probe(0.1).toFixed(3)} < ${probe(0.2).toFixed(3)}`);
+    ok('density falls off smoothly to zero at the radius',
+      hash.densityAt(0, 0, 0, 1e-6, -1, 0, 0) === 0);
+
+    const strong = computeOcclusion(curves, 0.1, 3);
+    ok('more falloff means more occlusion', mid(strong[bundle.length >> 1]) >= centre - 1e-9,
+      `${mid(strong[bundle.length >> 1]).toFixed(3)} vs ${centre.toFixed(3)}`);
+  }
+
+  // Wiring
+  const src = RIBBON_VS + RIBBON_FS;
+  const declared = new Set([...src.matchAll(/uniform\s+\w+\s+(\w+)/g)].map((m) => m[1]));
+  for (const name of ['uStrand', 'uStrandExp', 'uStrandShift', 'uStrandSheen', 'uStrandDiffuse', 'uOcclusion']) {
+    ok(`shader declares ${name}`, declared.has(name));
+  }
+  ok('the vertex stage takes a tangent', src.includes('attribute vec3 aTangent'));
+  ok('the tangent reaches the fragment stage', src.includes('vTangent = uNormalMat * aTangent'));
+  ok('params carry occlusion in w', src.includes('attribute vec4 aParam'));
+
+  const look = defaultState().look;
+  for (const key of ['strand', 'strandExp', 'strandShift', 'strandSheen', 'strandDiffuse',
+    'occlusion', 'occlusionRadius', 'occlusionStrength']) {
+    ok(`state has look.${key}`, look[key] !== undefined && isFinite(look[key]));
+  }
+}
+
+// ---------------------------------------------------------------- refinement
+section('progressive refinement');
+{
+  // Halton against the sequence by hand. Everything downstream — the pixel
+  // jitter, the lens, the sun, the sky — is a reindexing of this, so if it is
+  // wrong the samples clump and the image converges to the wrong picture.
+  const want2 = [0.5, 0.25, 0.75, 0.125, 0.625, 0.375, 0.875, 0.0625];
+  let worst = 0;
+  for (let i = 0; i < want2.length; i++) worst = Math.max(worst, Math.abs(halton(i, 2) - want2[i]));
+  ok('Halton base 2 is the radical inverse', worst < 1e-12, `worst ${worst.toExponential(2)}`);
+  const want3 = [1 / 3, 2 / 3, 1 / 9, 4 / 9, 7 / 9];
+  worst = 0;
+  for (let i = 0; i < want3.length; i++) worst = Math.max(worst, Math.abs(halton(i, 3) - want3[i]));
+  ok('Halton base 3 is the radical inverse', worst < 1e-12, `worst ${worst.toExponential(2)}`);
+
+  // Low discrepancy is the point: a thousand samples must fill the square far
+  // more evenly than chance would, or refinement is just slow noise.
+  {
+    const bins = new Array(64).fill(0);
+    for (let i = 0; i < 1024; i++) {
+      const bx = Math.min(7, Math.floor(halton(i, 2) * 8));
+      const by = Math.min(7, Math.floor(halton(i, 3) * 8));
+      bins[by * 8 + bx]++;
+    }
+    const lo = Math.min(...bins), hi = Math.max(...bins);
+    ok('the sample sequence fills the pixel evenly', lo >= 14 && hi <= 18, `${lo}..${hi} per bin of 16`);
+  }
+
+  // Lens samples must land in the unit disc and cover it.
+  {
+    let outside = 0, maxR = 0, quadrants = [0, 0, 0, 0];
+    for (let i = 0; i < 2048; i++) {
+      const [x, y] = diskSample(i);
+      const r = Math.hypot(x, y);
+      if (r > 1 + 1e-9) outside++;
+      maxR = Math.max(maxR, r);
+      quadrants[(x >= 0 ? 1 : 0) + (y >= 0 ? 2 : 0)]++;
+    }
+    ok('lens samples stay in the unit disc', outside === 0 && maxR <= 1, `max radius ${maxR.toFixed(6)}`);
+    ok('lens samples cover every quadrant', quadrants.every((q) => q > 400), quadrants.join(','));
+  }
+
+  // Sky directions must be unit length and actually cover the sphere, since
+  // one direction per pass has to serve every surface orientation in the scene.
+  {
+    let unit = true, mx = 0, my = 0, mz = 0;
+    const N = 4096;
+    for (let i = 0; i < N; i++) {
+      const d = sphereSample(i);
+      if (Math.abs(Math.hypot(d[0], d[1], d[2]) - 1) > 1e-9) unit = false;
+      mx += d[0]; my += d[1]; mz += d[2];
+    }
+    ok('sky directions are unit length', unit);
+    ok('sky directions are unbiased', Math.hypot(mx, my, mz) / N < 0.02,
+      `mean length ${(Math.hypot(mx, my, mz) / N).toExponential(2)}`);
+  }
+
+  // The sun is sampled inside its own angular radius: that, and nothing else,
+  // is what sets the width of the penumbra.
+  for (const deg of [0.5, 2, 10]) {
+    const dir = [0.4, 0.75, 0.55];
+    const dl = Math.hypot(dir[0], dir[1], dir[2]);
+    const nd = [dir[0] / dl, dir[1] / dl, dir[2] / dl];
+    let worstAngle = 0, unit = true, spread = 0;
+    for (let i = 0; i < 512; i++) {
+      const c = coneSample(nd, i, deg);
+      if (Math.abs(Math.hypot(c[0], c[1], c[2]) - 1) > 1e-9) unit = false;
+      const a = Math.acos(Math.min(1, c[0] * nd[0] + c[1] * nd[1] + c[2] * nd[2])) * 180 / Math.PI;
+      worstAngle = Math.max(worstAngle, a);
+      spread = Math.max(spread, a);
+    }
+    ok(`sun samples at ${deg}deg stay in the cone`, unit && worstAngle <= deg + 1e-6,
+      `worst ${worstAngle.toFixed(4)}deg`);
+    ok(`sun samples at ${deg}deg actually spread`, spread > deg * 0.8, `${spread.toFixed(3)}deg`);
+  }
+
+  // The shadow frustum. The geometry is auto-fitted into the unit ball, so the
+  // light's box must contain that ball whichever way the light points.
+  {
+    let inside = true, worstZ = 0;
+    const probes = [];
+    for (let i = 0; i < 64; i++) {
+      const d = sphereSample(i + 11);
+      probes.push([d[0], d[1], d[2]]);                 // on the unit sphere
+      probes.push([d[0] * 0.5, d[1] * 0.5, d[2] * 0.5]);
+    }
+    for (let i = 0; i < 24; i++) {
+      const dir = sphereSample(i * 3 + 1);
+      const m = lightMatrix(dir);
+      for (const p of probes) {
+        const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+        const y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+        const z = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14];
+        if (Math.abs(x) > 1 || Math.abs(y) > 1 || z < -1 || z > 1) inside = false;
+        worstZ = Math.max(worstZ, Math.abs(z));
+      }
+    }
+    ok('the unit ball fits the light frustum from every direction', inside, `worst |z| ${worstZ.toFixed(4)}`);
+  }
+
+  // Thin lens. Moving the eye across the aperture must leave anything at the
+  // focus distance exactly where it was on screen — that is what makes this
+  // defocus rather than a wobble.
+  {
+    const cam = new OrbitCamera();
+    cam.update(1.6);
+    const focusPoint = cam.target.slice();
+    const project = (c, p) => {
+      const m = c.mvp;
+      const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return [
+        (m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w,
+        (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w,
+      ];
+    };
+    const base = project(cam, focusPoint);
+    let drift = 0, moved = 0;
+    const offPoint = [0.6, 0.2, 0.4];
+    const baseOff = project(cam, offPoint);
+    for (let i = 0; i < 64; i++) {
+      cam.update(1.6, null, { ndc: [0, 0], lens: diskSample(i), aperture: 0.2, focus: 0 });
+      const q = project(cam, focusPoint);
+      drift = Math.max(drift, Math.hypot(q[0] - base[0], q[1] - base[1]));
+      const o = project(cam, offPoint);
+      moved = Math.max(moved, Math.hypot(o[0] - baseOff[0], o[1] - baseOff[1]));
+    }
+    ok('the focus plane stays put as the lens moves', drift < 1e-5, `drift ${drift.toExponential(2)}`);
+    ok('everything off the focus plane does move', moved > 0.02, `${moved.toFixed(4)}`);
+  }
+
+  // Sub-pixel jitter must offset the projection by exactly the amount asked
+  // for, and by nothing else.
+  {
+    const cam = new OrbitCamera();
+    cam.update(1.6);
+    const before = Array.from(cam.proj);
+    cam.update(1.6, null, { ndc: [0.013, -0.027], lens: [0, 0], aperture: 0, focus: 0 });
+    const after = Array.from(cam.proj);
+    let others = 0;
+    for (let i = 0; i < 16; i++) {
+      if (i === 8 || i === 9) continue;
+      others = Math.max(others, Math.abs(after[i] - before[i]));
+    }
+    // The projection is a Float32Array, so this is float32 precision, not double.
+    const dx = Math.abs(after[8] - before[8] - 0.013), dy = Math.abs(after[9] - before[9] + 0.027);
+    ok('sub-pixel jitter shifts the projection exactly', dx < 1e-7 && dy < 1e-7,
+      `${dx.toExponential(2)} / ${dy.toExponential(2)}`);
+    ok('sub-pixel jitter touches nothing else', others < 1e-7, `worst ${others.toExponential(2)}`);
+  }
+
+  // The running mean. Folding each sample in with weight 1/(n+1) has to equal
+  // a plain average, or late samples would count for more than early ones.
+  {
+    const vals = [];
+    for (let i = 0; i < 100; i++) vals.push(halton(i, 5));
+    let acc = 0;
+    for (let i = 0; i < vals.length; i++) acc = acc * (1 - 1 / (i + 1)) + vals[i] * (1 / (i + 1));
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    ok('the accumulator is a true running mean', Math.abs(acc - mean) < 1e-12,
+      `${acc.toFixed(12)} vs ${mean.toFixed(12)}`);
+  }
+
+  // Uniforms and state
+  const src = RIBBON_VS + RIBBON_FS;
+  const declared = new Set([...src.matchAll(/uniform\s+\w+\s+(\w+)/g)].map((m) => m[1]));
+  for (const name of ['uSunShadow', 'uSunVP', 'uSunMap', 'uSkyLight', 'uSkyVP', 'uSkyMap',
+    'uSkyDir', 'uShadowBias', 'uEnvMode', 'uCamPos', 'uInscatter',
+    'uZenith', 'uHorizon', 'uGroundCol', 'uSunDir', 'uSunColor', 'uSunSize', 'uSunIntensity', 'uHaze']) {
+    ok(`shader declares ${name}`, declared.has(name));
+  }
+  ok('the vertex stage passes world position', src.includes('vWorld = aPos'));
+
+  const look = defaultState().look;
+  for (const key of ['rtEnabled', 'rtSamples', 'rtAperture', 'rtFocus', 'rtSunShadow',
+    'rtSunSoftness', 'rtSkyLight', 'rtShadowSize', 'rtBias', 'envMode', 'skyZenith',
+    'skyHorizon', 'skyGround', 'sunColor', 'sunSize', 'sunIntensity', 'haze', 'inscatter',
+    'toneMap', 'outExposure']) {
+    ok(`state has look.${key}`, look[key] !== undefined);
+  }
+  ok('refinement is off by default', look.rtEnabled === false);
+  ok('the environment defaults to the old gradient', look.envMode === 0);
+  ok('tone mapping defaults to none', look.toneMap === 0);
+}
+
 // ---------------------------------------------------------------- material and texture
 section('material and texture');
 {
@@ -1095,14 +1475,21 @@ section('material and texture');
     };
     const prep = prepareCurves(curves, opts, grad);
     const chunks = buildMesh(prep, opts);
-    let stride = true, range = true;
+    let stride = true, range = true, tanOk = true;
     for (const c of chunks) {
-      if (c.params.length !== c.vertexCount * 3) stride = false;
-      for (let i = 2; i < c.params.length; i += 3) {
+      if (c.params.length !== c.vertexCount * 4) stride = false;
+      if (c.tangents.length !== c.vertexCount * 3) tanOk = false;
+      for (let i = 2; i < c.params.length; i += 4) {
+        if (!(c.params[i] >= 0 && c.params[i] <= 1)) range = false;
+      }
+      // Occlusion rides in the fourth slot and must stay in range even when
+      // nothing computed it.
+      for (let i = 3; i < c.params.length; i += 4) {
         if (!(c.params[i] >= 0 && c.params[i] <= 1)) range = false;
       }
     }
-    ok(`form ${geomMode}: three params per vertex`, stride);
+    ok(`form ${geomMode}: four params per vertex`, stride);
+    ok(`form ${geomMode}: one tangent per vertex`, tanOk);
     ok(`form ${geomMode}: texture coordinate is in 0..1`, range);
   }
 
@@ -1114,8 +1501,8 @@ section('material and texture');
       taperPower: 0.5, twist: 0, smoothIters: 0, colorMode: 0, colorCycles: 1, colorReverse: false,
     };
     const c = buildMesh(prepareCurves(curves, opts, grad), opts)[0];
-    ok('ribbon edges are 0 and 1', c.params[2] === 0 && c.params[5] === 1,
-      `${c.params[2]} / ${c.params[5]}`);
+    ok('ribbon edges are 0 and 1', c.params[2] === 0 && c.params[6] === 1,
+      `${c.params[2]} / ${c.params[6]}`);
   }
 
   // Glass must blend even at full opacity, or the Fresnel alpha does nothing.

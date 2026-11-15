@@ -300,6 +300,151 @@ Every pattern is built from sines and `smoothstep` rather than `step` and
 `fwidth`. Derivatives need `GL_OES_standard_derivatives`, which WebGL1 does not
 promise, and a hard step on a ribbon a few pixels wide aliases into noise.
 
+## Fog
+
+Fog is measured from the **near edge of the subject**, not from the world
+origin. The geometry is always auto-fitted into the unit ball, so that edge sits
+at (camera distance − 1) whichever field is loaded and however far out the
+camera is.
+
+This was wrong at first and worth recording. An absolute start distance meant
+the nearest ribbon already carried fog — at the default camera, 14.8% before the
+depth cue even began, so most of the effect was a flat wash and only 23
+percentage points were left to read as distance. Worse, it meant something
+different at every zoom: at a camera distance of 1.2 the start sat beyond the
+front half of the scene entirely, so that half clamped to zero fog and the back
+reached 19%. Pushing the density slider made the whole image milky instead of
+making the back recede.
+
+`fogBegin` is now a fraction of the scene's own two-unit depth: 0 starts the
+fade exactly at the front of the subject, 1 pushes it past the back and switches
+fog off. The front is unfogged at every zoom level and the same settings give
+the same picture whether the camera is at 1.2 or at 12 — both are tested.
+
+One thing no amount of fog maths fixes: if the fog colour matches the
+background and both are near-black, fog reads as *dimming*, not as atmosphere.
+Distance fading to the background colour is physically right, but it only looks
+like haze when the fog is lighter than the things it is hiding. For visible
+atmosphere, set the fog colour lighter than the ribbons, or turn on the sky
+model, where the in-scatter term already tints the haze toward the sun.
+
+## Strand shading
+
+A streamline ribbon is a fibre, and a fibre's highlight runs **along its
+length**, not around a surface normal — the normal of a thin strand is barely
+defined in the direction that matters, which is why Blinn-Phong makes these read
+as plastic tubing. Kajiya-Kay replaces the half-vector term with one built from
+the tangent, and it is the reason hair and brushed metal look like hair and
+brushed metal.
+
+Vertices now carry the curve direction, so the shading has a tangent to work
+with. There are two lobes: a tight primary, and a second shifted the other way
+and tinted by the strand's own colour, which is the cheap stand-in for light
+that entered the fibre and came back out. Strand diffuse is brightest side-on to
+the light, the way a cylinder actually scatters, and it does not collapse where
+the normal is unreliable. Anisotropy at 0 restores the old Blinn-Phong exactly.
+
+## Occlusion
+
+Measured from the geometry, not from a shadow map or from the screen.
+
+A shadow map is the wrong instrument for this scene, and trying it is what made
+the first ray-tracing pass look worse rather than better. At a 1024 map over the
+unit ball each texel is about 0.0025 across, and these ribbons are 0.006 to
+0.012 wide — two to five texels. Geometry that thin cannot shadow itself
+coherently; jittering the light just turns the failure into flicker that
+averages to mush.
+
+But the tracer already knows where every strand is. So every sample is dropped
+into a uniform grid and each one asks how crowded its neighbourhood is, with a
+smooth falloff so occlusion does not jump as a neighbour crosses the radius. The
+result is exact for filaments, free at render time, and has no noise to converge
+away. A curve's own neighbours are excluded out to a few samples, or the measure
+would be reporting the integration step size.
+
+Both sides are thinned — a fixed budget of occluders and of probe points, with
+the values interpolated between probes — which keeps it near a second whatever
+the scene size, against six and rising if every sample is tested against every
+other. The output is normalised against the densest point in the scene, so a
+setting means the same thing at 200 curves or 4000, and so the thinning cannot
+change what it looks like.
+
+The cost is in memory: vertices now carry a tangent and an occlusion value, so
+they are 64 bytes rather than 48. The practical ceiling moves from about 3
+million vertices to about 2.3 million.
+
+## Progressive refinement
+
+The geometry here is a mesh of millions of triangles, so it is rasterised, not
+ray traced — and that turns out not to be what matters. What makes a ray traced
+image look the way it does is mostly that lighting, lens and anti-aliasing are
+all *integrals*, estimated by averaging many randomised samples rather than
+approximated in one pass. That part transfers exactly, and it is what
+**Progressive refinement** does: one sample per frame, folded into a running
+mean, restarting whenever anything changes.
+
+Each sample jitters four things independently:
+
+- **The pixel**, by a sub-pixel offset. Averaged, this is exact anti-aliasing of
+  every edge in the image rather than a post-process guess.
+- **The lens**, across an aperture, re-aiming at the focus plane each time. This
+  is a real thin lens: everything at the focus distance stays put while
+  everything else smears, so the defocus converges instead of being blurred, and
+  near and far objects occlude each other correctly inside the blur.
+- **The sun**, inside its own angular radius. The penumbra width comes from the
+  sun's size, not from a filter kernel.
+- **The sky**, one direction per sample, uniformly over the sphere. The cosine
+  and the factor of four are the estimator, and it averages to exactly 1 for an
+  unoccluded white sky — the same value as the hemisphere ambient term it
+  replaces — so turning it on changes the occlusion, not the overall level.
+
+Visibility comes from a shadow map rather than a cast ray, which is the one
+place the analogy stops. Because the scene is auto-fitted into the unit ball
+before it is drawn, that map's orthographic box is always the same known size:
+no cascades, no frustum fitting, nothing to get wrong. Front faces are culled
+while rendering it, so a closed tube's far wall is the depth that gets compared
+against — which is most of what stops a ribbon shadowing itself into stripes.
+
+The sample sequence is Halton, indexed by sample number alone. That makes a
+given sample identical on every machine and, more usefully, identical in every
+tile of a big export, so a refined export has no visible seams. Accumulation is
+a running mean weighted 1/(n+1) rather than a sum, which keeps the buffer in
+range without needing a float render target — WebGL1 cannot promise one. An
+8-bit buffer quantises that increment to nothing once n gets large, so the
+accumulator dithers; without it the image stops converging in flat areas and
+bands instead.
+
+Tone mapping happens once at the end, after accumulation, so highlights are
+averaged in linear light and compressed once rather than clipped per sample.
+
+Refinement is off by default, and while anything is animating it restarts every
+frame — it is for still images.
+
+A caution learned the hard way: on dense filament scenes, **sky light and sun
+shadows are usually not the parts worth turning on**. The sky estimator takes
+one direction per sample for the whole scene, so about half the samples
+contribute nothing to any given normal, and in a tangle almost everything is
+occluded anyway — it converges slowly toward a darker, muddier image. The
+anti-aliasing and the depth of field are the parts that earn their place here.
+For occlusion, use the baked measure above; it is better suited and instant.
+
+## Atmosphere and environment
+
+**Sky model**: zenith, horizon and ground colours, a sun disc with a soft limb
+and a forward-scattering halo, and a haze control that widens the horizon band.
+One function, pasted into both programs, so the sky the background draws, the
+sky a mirror reflects, and the sky that lights the geometry are the same thing
+rather than three that drift apart. The background rebuilds a view ray per pixel
+from the camera basis, which keeps it correct when a big export is rendered one
+tile at a time.
+
+Fog gains **sun in-scatter** when the sky is on: haze looking toward the sun is
+brighter and takes the sun's colour, which is what gives distance depth instead
+of a flat wash.
+
+The old flat gradient is still there and is still the default, so every existing
+preset looks exactly as it did.
+
 ## Export
 
 - **PNG** — at any size up to 300 megapixels, through the same render path as
@@ -391,3 +536,7 @@ Memory is the other budget. A tube at 6 sides costs six vertices per sample, and
 vertices carry position, normal, colour and parameters. Around 3 million
 vertices is where an ordinary GPU starts to complain — the status bar reports
 the count.
+
+---
+
+Created with help from Claude AI.

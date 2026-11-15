@@ -23,7 +23,7 @@ export class OrbitCamera {
    * `tile`, when given, is [x0, x1, y0, y1] in 0..1 with y up — the slice of
    * the image being rendered. `aspect` stays the aspect of the whole image.
    */
-  update(aspect, tile) {
+  update(aspect, tile, jit) {
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     this.eye[0] = this.target[0] + this.dist * cp * Math.sin(this.yaw);
     this.eye[1] = this.target[1] + this.dist * sp;
@@ -34,11 +34,42 @@ export class OrbitCamera {
     } else {
       mat4Perspective((this.fov * Math.PI) / 180, aspect, this.near, this.far, this.proj);
     }
-    mat4LookAt(this.eye, this.target, this.up, this.view);
-    // World-space forward, for depth sorting.
-    const fx = this.target[0] - this.eye[0], fy = this.target[1] - this.eye[1], fz = this.target[2] - this.eye[2];
-    const fl = Math.hypot(fx, fy, fz) || 1;
-    this.viewDir = [fx / fl, fy / fl, fz / fl];
+    // Sub-pixel offset, in clip space. Averaged over samples this is exact
+    // anti-aliasing of every edge in the image, not a post-process guess.
+    if (jit && jit.ndc) { this.proj[8] += jit.ndc[0]; this.proj[9] += jit.ndc[1]; }
+    // Camera basis, before any lens offset: the sky background rebuilds a view
+    // ray from it, and depth of field needs it to move the eye sideways.
+    let fx = this.target[0] - this.eye[0], fy = this.target[1] - this.eye[1], fz = this.target[2] - this.eye[2];
+    const fl0 = Math.hypot(fx, fy, fz) || 1;
+    fx /= fl0; fy /= fl0; fz /= fl0;
+    let rx = fy * this.up[2] - fz * this.up[1];
+    let ry = fz * this.up[0] - fx * this.up[2];
+    let rz = fx * this.up[1] - fy * this.up[0];
+    const rl = Math.hypot(rx, ry, rz) || 1;
+    rx /= rl; ry /= rl; rz /= rl;
+    const ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
+    this.right = [rx, ry, rz];
+    this.upVec = [-ux, -uy, -uz];
+    this.fwd = [fx, fy, fz];
+
+    const eye = [this.eye[0], this.eye[1], this.eye[2]];
+    let aim = this.target;
+    if (jit && jit.aperture > 0) {
+      // Thin lens. The eye slides across the aperture and re-aims at the focus
+      // plane, so everything at that distance stays put while everything else
+      // smears across samples — real defocus, converging rather than blurred.
+      const a = jit.aperture;
+      const du = jit.lens[0] * a, dv = jit.lens[1] * a;
+      const dist = jit.focus > 0 ? jit.focus : this.dist;
+      aim = [eye[0] + fx * dist, eye[1] + fy * dist, eye[2] + fz * dist];
+      eye[0] += rx * du + this.upVec[0] * dv;
+      eye[1] += ry * du + this.upVec[1] * dv;
+      eye[2] += rz * du + this.upVec[2] * dv;
+    }
+    mat4LookAt(eye, aim, this.up, this.view);
+    this.eyeJittered = eye;
+    // World-space forward, for depth sorting. Same vector as the basis above.
+    this.viewDir = [fx, fy, fz];
     mat4Multiply(this.proj, this.view, this.mvp);
     mat3FromMat4(this.view, this.normalMat);
     return this;

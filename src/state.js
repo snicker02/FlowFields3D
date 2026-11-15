@@ -120,8 +120,8 @@ export function defaultState() {
       shininess: 28,
       rim: 0.35,
       fogColor: '#05070c',
-      fogDensity: 0.16,
-      fogStart: 1.2,
+      fogDensity: 0.35,
+      fogBegin: 0,            // 0..1 across the scene's own depth, not world units
       flowFreq: 3,
       flowStrength: 0,
       flowSpeed: 0.35,
@@ -140,6 +140,44 @@ export function defaultState() {
       travelStagger: 1,
       travelCount: 4,
       travelGlow: 0.8,
+      // Strand shading. A streamline ribbon is a fibre, so it wants a fibre's
+      // highlight: along the tangent, not around the normal.
+      strand: 0.8,
+      strandExp: 48,
+      strandShift: 0.12,
+      strandSheen: 0.6,
+      strandDiffuse: 0.5,
+
+      // Occlusion measured from the geometry at build time.
+      occlusion: 0.75,
+      occlusionRadius: 0.06,   // fraction of the fitted unit ball
+      occlusionStrength: 1,
+
+      // Progressive refinement. Off by default: it changes how the viewport
+      // behaves, and an existing preset should look like it always did.
+      rtEnabled: false,
+      rtSamples: 192,
+      rtAperture: 0,          // 0 = pinhole, no defocus
+      rtFocus: 0,             // 0 = focus on whatever the camera orbits
+      rtSunShadow: true,
+      rtSunSoftness: 1.5,     // the sun's angular radius, in degrees
+      rtSkyLight: true,
+      rtShadowSize: 1024,
+      rtBias: 0.0025,
+
+      // Atmosphere and environment.
+      envMode: 0,             // 0 the old vertical gradient, 1 the sky model
+      skyZenith: '#2a4a86',
+      skyHorizon: '#b8cde0',
+      skyGround: '#1a1510',
+      sunColor: '#fff0d6',
+      sunSize: 1.5,
+      sunIntensity: 6,
+      haze: 0.35,
+      inscatter: 0.6,
+      toneMap: 0,             // 0 none, 1 filmic, 2 Reinhard
+      outExposure: 1,
+
       dither: true,           // stochastic cutout for every translucency
       sortDepth: true,
       material: 0,            // 0 satin, 1 mirror, 2 glass

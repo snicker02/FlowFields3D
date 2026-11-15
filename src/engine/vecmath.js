@@ -86,6 +86,19 @@ export function mat4PerspectiveTile(fovyRad, aspect, near, far, x0, x1, y0, y1, 
   return o;
 }
 
+/** Orthographic projection, column-major. */
+export function mat4Ortho(l, r, b, t, n, f, o = new Float32Array(16)) {
+  o.fill(0);
+  o[0] = 2 / (r - l);
+  o[5] = 2 / (t - b);
+  o[10] = -2 / (f - n);
+  o[12] = -(r + l) / (r - l);
+  o[13] = -(t + b) / (t - b);
+  o[14] = -(f + n) / (f - n);
+  o[15] = 1;
+  return o;
+}
+
 export function mat4LookAt(eye, target, up, o = new Float32Array(16)) {
   const z = normalize(sub(eye, target));
   let x = cross(up, z);

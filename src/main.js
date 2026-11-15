@@ -12,10 +12,11 @@ import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
 import { foldStepScale } from './engine/fractal.js';
 import { recordFrames, chooseVideoFormat, availableVideoFormats } from './io/recorder.js';
 import { makeVolume } from './engine/volume.js';
+import { halton, diskSample, sphereSample, coneSample } from './engine/rt.js';
 import { canParallelise, parallelTrace, workerCount } from './engine/pool.js';
 import { ImageSource, makeImageField, toPowerOfTwoCanvas, readImageFile } from './engine/image.js';
 import { Tracer } from './engine/integrator.js';
-import { prepareCurves, buildMesh } from './engine/geometry.js';
+import { prepareCurves, buildMesh, computeOcclusion } from './engine/geometry.js';
 import { Gradient } from './engine/palette.js';
 import { Renderer } from './engine/renderer.js';
 import { OrbitCamera } from './engine/camera.js';
@@ -25,7 +26,7 @@ import { Panel } from './ui/panel.js';
 import { GradientEditor } from './ui/gradient.js';
 import { downloadBlob, stamp, chunksToOBJ, preparedToSVG, stateToJSON, parseStateJSON, resolveExportSize } from './io/exporters.js';
 
-const BUILD = '0.1.0';
+const BUILD = '0.3.1';
 
 const app = {
   state: defaultState(),
@@ -36,6 +37,11 @@ const app = {
   prepared: null,
   chunks: [],
   tracer: null,
+  rtSample: 0,
+  occKey: null,
+  occMs: 0,
+  rtBroken: false,
+  lastStatus: '',
   traceToken: 0,
   parallelBroken: false,
   image: null,          // ImageSource, once one is loaded
@@ -66,7 +72,7 @@ function boot() {
   }
 
   app.gradient = new Gradient(app.state.color.gradient);
-  app.camera.attach(canvas, () => { app.dirtyDraw = true; });
+  app.camera.attach(canvas, () => { invalidate(); });
   syncCameraFromState();
 
   const panelRoot = el('panel');
@@ -86,7 +92,7 @@ function boot() {
   });
 
   buildToolbar();
-  window.addEventListener('resize', () => { app.dirtyDraw = true; });
+  window.addEventListener('resize', () => { invalidate(); });
   window.addEventListener('keydown', onKey);
 
   console.log(`Flow Fields 3D — build ${BUILD}`);
@@ -109,7 +115,7 @@ function schedule(level) {
     clearTimeout(traceTimer);
     traceTimer = setTimeout(rebuildGeometry, 40);
   } else if (level !== 'none') {
-    app.dirtyDraw = true;
+    invalidate();
   }
 }
 
@@ -240,11 +246,45 @@ function finishTrace() {
   rebuildGeometry();
 }
 
+/**
+ * Measure occlusion once per set of curves and per radius, and hang it on the
+ * curves. It walks every sample against a grid of every other sample, so it is
+ * the slowest thing in a geometry rebuild — recomputing it when only a colour
+ * changed would make the panel feel broken.
+ */
+function ensureOcclusion() {
+  const look = app.state.look;
+  if (!app.curves || !app.curves.length) return;
+  const on = look.occlusion > 0.001;
+  const key = on ? `${app.traceToken}|${look.occlusionRadius}|${look.occlusionStrength}` : 'off';
+  if (app.occKey === key) return;
+  app.occKey = key;
+
+  if (!on) {
+    for (const c of app.curves) c.occ = null;
+    return;
+  }
+  // The radius is a fraction of the fitted unit ball, but the curves are still
+  // in field units here, so it is scaled back by the same span the fit uses.
+  let span = 0;
+  for (const c of app.curves) {
+    for (let i = 0; i < c.n; i++) {
+      span = Math.max(span, Math.abs(c.pts[i * 3]), Math.abs(c.pts[i * 3 + 1]), Math.abs(c.pts[i * 3 + 2]));
+    }
+  }
+  const radius = Math.max(1e-5, look.occlusionRadius * Math.max(1e-6, span));
+  const t = performance.now();
+  const occ = computeOcclusion(app.curves, radius, look.occlusionStrength);
+  for (let i = 0; i < app.curves.length; i++) app.curves[i].occ = occ[i];
+  app.occMs = performance.now() - t;
+}
+
 function rebuildGeometry() {
   app.pendingGeom = false;
   if (!app.curves.length) { setStatus('No streamlines survived — try a larger escape radius or a smaller minimum length.'); return; }
   const s = app.state;
   const t0 = performance.now();
+  ensureOcclusion();
   const opts = {
     h: s.field.domain * s.trace.stepFrac,
     ...s.geom,
@@ -256,7 +296,7 @@ function rebuildGeometry() {
   app.prepared = prepareCurves(app.curves, opts, app.gradient);
   app.chunks = buildMesh(app.prepared, s.geom);
   app.renderer.upload(app.chunks);
-  app.dirtyDraw = true;
+  invalidate();
   const ms = performance.now() - t0;
   setStatus(`${app.prepared.items.length} curves · ${app.prepared.totalSamples.toLocaleString()} samples · `
     + `${app.renderer.stats.vertices.toLocaleString()} vertices · trace ${app.lastTraceMs.toFixed(0)} ms · build ${ms.toFixed(0)} ms`);
@@ -280,14 +320,14 @@ function loop(t) {
   }
 
   const look = app.state.look;
-  if (look.autoRotate) { app.camera.yaw += look.autoRotate * dt * 0.35; app.dirtyDraw = true; }
+  if (look.autoRotate) { app.camera.yaw += look.autoRotate * dt * 0.35; invalidate(); }
   if (look.flowStrength > 0 && look.flowSpeed !== 0) {
     look.flowPhase += look.flowSpeed * dt;
-    app.dirtyDraw = true;
+    invalidate();
   }
   if (look.travelMode > 0 && look.travelSpeed !== 0) {
     look.travelPhase += look.travelSpeed * dt;
-    app.dirtyDraw = true;
+    invalidate();
   }
 
   if (app.dirtyDraw) draw();
@@ -300,16 +340,91 @@ function viewportSize() {
   return { w: Math.max(1, Math.round(r.width * dpr)), h: Math.max(1, Math.round(r.height * dpr)) };
 }
 
+/**
+ * Anything that changes the picture restarts the refinement. Averaging samples
+ * taken under different settings would smear the old image into the new one,
+ * so the mean has to begin again rather than carry on.
+ */
+function invalidate() {
+  app.rtSample = 0;
+  app.dirtyDraw = true;
+}
+
+/** The camera bundle every draw path hands the renderer. */
+function lookBundle() {
+  const c = app.camera;
+  return {
+    mvp: c.mvp, modelView: c.view, normalMat: c.normalMat, viewDir: c.viewDir,
+    camPos: c.eyeJittered || c.eye,
+    camRight: c.right, camUp: c.upVec, camFwd: c.fwd,
+    tanHalfFov: Math.tan((c.fov * Math.PI) / 180 / 2),
+  };
+}
+
+/**
+ * The jitter for one refinement sample: a sub-pixel offset, a point on the
+ * lens, a direction inside the sun's disc, and one direction for the sky.
+ * Driven by the sample index alone, so a given sample is the same on every
+ * machine and in every tile of a big export.
+ */
+function sampleJitter(i, w, h) {
+  const look = app.state.look;
+  return {
+    ndc: [(halton(i, 2) - 0.5) * 2 / w, (halton(i, 3) - 0.5) * 2 / h],
+    lens: diskSample(i),
+    aperture: look.rtAperture,
+    focus: look.rtFocus,
+  };
+}
+
+function sampleRtConfig(i) {
+  const look = app.state.look;
+  const sun = look.lightDir;
+  return {
+    sunShadow: !!look.rtSunShadow,
+    skyLight: !!look.rtSkyLight,
+    sunDir: coneSample(sun, i, look.rtSunSoftness),
+    skyDir: sphereSample(i),
+    bias: look.rtBias,
+  };
+}
+
+/** True when progressive refinement is on and the driver gave us the targets. */
+function rtActive(w, h) {
+  const look = app.state.look;
+  if (!look.rtEnabled || app.rtBroken) return false;
+  const size = (look.rtSunShadow || look.rtSkyLight) ? (look.rtShadowSize | 0) : 0;
+  if (!app.renderer.ensureTargets(w, h, size)) {
+    app.rtBroken = true;
+    setStatus('This driver would not give us an offscreen buffer, so refinement is off.');
+    return false;
+  }
+  return true;
+}
+
 function draw() {
   const { w, h } = viewportSize();
   app.renderer.resize(w, h);
   app.camera.fov = app.state.camera.fov;
-  app.camera.update(w / h);
-  app.renderer.renderScene(
-    { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
-    app.state.look, w, h,
-  );
-  app.dirtyDraw = false;
+
+  if (rtActive(w, h)) {
+    // One sample per frame. Restarting on every change is what makes the
+    // preview responsive: drag the camera and you get a noisy image that
+    // settles the moment you stop, rather than a frozen one that is accurate.
+    app.camera.update(w / h, null, sampleJitter(app.rtSample, w, h));
+    app.renderer.renderSample(lookBundle(), app.state.look, w, h, app.rtSample, sampleRtConfig(app.rtSample));
+    app.rtSample++;
+    app.renderer.present(app.state.look, w, h);
+    const total = Math.max(1, app.state.look.rtSamples | 0);
+    if (app.rtSample < total) app.dirtyDraw = true;       // keep refining
+    else app.dirtyDraw = false;
+    if (app.rtSample === total) setStatus(`${app.lastStatus} · refined to ${total} samples`);
+  } else {
+    app.camera.update(w / h);
+    app.renderer.renderScene(lookBundle(), app.state.look, w, h);
+    app.dirtyDraw = false;
+  }
+
   app.state.camera.yaw = app.camera.yaw;
   app.state.camera.pitch = app.camera.pitch;
   app.state.camera.dist = app.camera.dist;
@@ -320,7 +435,7 @@ function syncCameraFromState() {
   const c = app.state.camera;
   app.camera.yaw = c.yaw; app.camera.pitch = c.pitch; app.camera.dist = c.dist;
   app.camera.fov = c.fov; app.camera.target = c.target.slice();
-  app.dirtyDraw = true;
+  invalidate();
 }
 
 const HISTORY_LIMIT = 60;
@@ -381,7 +496,7 @@ function redo() {
   applyState(parseStateJSON(snap), 'Redone');
 }
 
-function setStatus(text) { statusEl.textContent = text; }
+function setStatus(text) { app.lastStatus = text; statusEl.textContent = text; }
 
 function setProgress(frac) {
   progressBar.style.width = (Math.max(0, Math.min(1, frac)) * 100).toFixed(1) + '%';
@@ -606,7 +721,7 @@ async function saveVideo() {
     setProgress(0);
     app.exporting = false;
     app.camera.update(w / h);
-    app.dirtyDraw = true;
+    invalidate();
   }
 }
 
@@ -652,13 +767,19 @@ async function savePNG() {
   const cols = Math.ceil(W / tileT), rows = Math.ceil(H / tileT);
   const total = cols * rows;
 
+  // Refinement multiplies the work by the sample count, so say so up front
+  // rather than letting it look like a hang.
+  const rtOn = !!s.look.rtEnabled && !app.rtBroken;
+  const rtSamples = rtOn ? Math.max(1, s.look.rtSamples | 0) : 1;
+  const shadowSize = (s.look.rtSunShadow || s.look.rtSkyLight) ? (s.look.rtShadowSize | 0) : 0;
+
   app.exporting = true;
   const restore = () => {
     app.exporting = false;
     const v = viewportSize();
     app.renderer.resize(v.w, v.h);
     app.camera.update(v.w / v.h);
-    app.dirtyDraw = true;
+    invalidate();
   };
 
   try {
@@ -673,18 +794,33 @@ async function savePNG() {
         const rect = [x / W, (x + tw) / W, 1 - (y + th) / H, 1 - y / H];
 
         app.renderer.resize(pw, ph);
-        app.camera.update(W / H, rect);
-        app.renderer.renderScene(
-          { mvp: app.camera.mvp, modelView: app.camera.view, normalMat: app.camera.normalMat, viewDir: app.camera.viewDir },
-          s.look, pw, ph,
-          [rect[0], rect[2], rect[1] - rect[0], rect[3] - rect[2]],
-        );
+        const uv = [rect[0], rect[2], rect[1] - rect[0], rect[3] - rect[2]];
+
+        if (rtOn) {
+          // Each tile is refined on its own. The jitter is a function of the
+          // sample index alone, so every tile uses the same lens positions and
+          // the same sun and sky directions — the seams stay invisible.
+          app.renderer.ensureTargets(pw, ph, shadowSize);
+          for (let k = 0; k < rtSamples; k++) {
+            app.camera.update(W / H, rect, sampleJitter(k, pw, ph));
+            app.renderer.renderSample(lookBundle(), s.look, pw, ph, k, sampleRtConfig(k), uv);
+            if ((k & 15) === 15) {
+              setProgress((done + (k + 1) / rtSamples) / total);
+              await new Promise((r) => requestAnimationFrame(r));
+            }
+          }
+          app.renderer.present(s.look, pw, ph);
+        } else {
+          app.camera.update(W / H, rect);
+          app.renderer.renderScene(lookBundle(), s.look, pw, ph, uv);
+        }
         ctx2d.drawImage(canvas, 0, 0, pw, ph, x, y, tw, th);
 
         done++;
         if (total > 1) {
           setProgress(done / total);
-          setStatus(`Rendering ${W} x ${H}${ss > 1 ? ` at ${ss}x` : ''} — tile ${done} of ${total}`);
+          setStatus(`Rendering ${W} x ${H}${ss > 1 ? ` at ${ss}x` : ''}`
+            + `${rtOn ? ` at ${rtSamples} samples` : ''} — tile ${done} of ${total}`);
           await new Promise((r) => requestAnimationFrame(r));   // let the bar move
         }
       }

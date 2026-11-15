@@ -29,6 +29,40 @@ export class SpatialHash {
   }
 
   /**
+   * How much of the neighbourhood of (x,y,z) is taken up by other curves,
+   * weighted so a sample right against the point counts for more than one at
+   * arm's length. Samples belonging to `selfId` within `skip` steps are
+   * ignored: a curve is always surrounded by its own neighbouring samples, and
+   * counting those would just measure the step size.
+   */
+  densityAt(x, y, z, d, selfId = -1, selfIndex = 0, skip = 0) {
+    const d2 = d * d;
+    let sum = 0;
+    const cx = Math.floor(x * this.inv), cy = Math.floor(y * this.inv), cz = Math.floor(z * this.inv);
+    const r = Math.max(1, Math.ceil(d * this.inv));
+    for (let ix = cx - r; ix <= cx + r; ix++) {
+      for (let iy = cy - r; iy <= cy + r; iy++) {
+        for (let iz = cz - r; iz <= cz + r; iz++) {
+          const bucket = this.map.get(this.key(ix, iy, iz));
+          if (!bucket) continue;
+          for (let b = 0; b < bucket.length; b++) {
+            const i = bucket[b];
+            if (this.cid[i] === selfId && Math.abs(this.idx[i] - selfIndex) <= skip) continue;
+            const dx = this.px[i] - x, dy = this.py[i] - y, dz = this.pz[i] - z;
+            const q2 = dx * dx + dy * dy + dz * dz;
+            if (q2 >= d2) continue;
+            // Smooth falloff to zero at the radius, so occlusion does not jump
+            // as a neighbour crosses the boundary.
+            const t = 1 - q2 / d2;
+            sum += t * t;
+          }
+        }
+      }
+    }
+    return sum;
+  }
+
+  /**
    * True if any stored sample lies within `d` of (x,y,z), ignoring samples that
    * belong to `selfId` within `skip` steps of `selfIndex` — a streamline must be
    * allowed to run away from its own recent past without tripping the test.

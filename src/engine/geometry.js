@@ -12,6 +12,7 @@
 // torsion of its own, so any twist you see is twist you asked for.
 
 import { Noise } from './noise.js';
+import { SpatialHash } from './spatialhash.js';
 
 export const GEOM_MODES = ['Ribbon', 'Tube', 'Line', 'Box'];
 export const WIDTH_MODES = ['Constant', 'Taper', 'By speed', 'By curvature', 'Random per curve', 'Ramp', 'Noise', 'By image'];
@@ -158,6 +159,85 @@ export function analyse(curves, h) {
  * opts: { h, width, widthMode, widthAmount, taperPower, twist, twistNoise,
  *         smoothIters, smoothStrength, colorMode, colorCycles, colorReverse }
  */
+/**
+ * Ambient occlusion, computed from the geometry rather than from the screen or
+ * from a shadow map.
+ *
+ * A shadow map is the wrong instrument for this scene: at a 1024 map over the
+ * unit ball each texel is about 0.0025 across, and these ribbons are 0.006 to
+ * 0.012 wide — two to five texels. Geometry that thin cannot shadow itself
+ * coherently, and jittering the light turns the failure into flicker. But the
+ * tracer already knows where every strand is, so the occlusion can simply be
+ * measured: drop every sample into a uniform grid and ask each one how crowded
+ * its neighbourhood is. Exact for filaments, free at render time, and with no
+ * noise to converge away.
+ *
+ * Returns one Float32Array per curve, 0 (open) to 1 (buried).
+ */
+export function computeOcclusion(curves, radius, strength) {
+  let total = 0;
+  for (const c of curves) total += c.n;
+  if (!total) return curves.map((c) => new Float32Array(c.n));
+
+  // Occlusion varies slowly along a curve — far more slowly than the
+  // integration step, which is set by how accurately the streamline has to
+  // follow the field. Measuring every sample against every other sample is
+  // hundreds of millions of distance tests on a dense scene and takes seconds.
+  // So both sides are thinned: a fraction of the samples act as occluders, and
+  // the measure is taken at a fraction of the points and interpolated between.
+  // The error is far below what the eye can see in a shading term, and the
+  // normalisation below absorbs the change in density outright.
+  const OCCLUDERS = 60000, PROBES = 40000;
+  const insertStride = Math.max(1, Math.floor(total / OCCLUDERS));
+  const probeStride = Math.max(1, Math.floor(total / PROBES));
+
+  const hash = new SpatialHash(Math.max(1e-6, radius));
+  for (let c = 0; c < curves.length; c++) {
+    const k = curves[c];
+    for (let i = 0; i < k.n; i += insertStride) {
+      hash.insert(k.pts[i * 3], k.pts[i * 3 + 1], k.pts[i * 3 + 2], c, i);
+    }
+  }
+
+  // A sample's own curve is excluded out to this many of its own samples, or
+  // the result would mostly measure the integration step size.
+  const skip = 6 * insertStride;
+  const out = [];
+  let peak = 1e-9;
+  for (let c = 0; c < curves.length; c++) {
+    const k = curves[c];
+    const occ = new Float32Array(k.n);
+    let prevI = 0;
+    let prevV = hash.densityAt(k.pts[0], k.pts[1], k.pts[2], radius, c, 0, skip);
+    occ[0] = prevV;
+    if (prevV > peak) peak = prevV;
+    for (let i = probeStride; i < k.n + probeStride; i += probeStride) {
+      const at = Math.min(i, k.n - 1);
+      const v = hash.densityAt(k.pts[at * 3], k.pts[at * 3 + 1], k.pts[at * 3 + 2], radius, c, at, skip);
+      if (v > peak) peak = v;
+      for (let j = prevI + 1; j <= at; j++) {
+        const t = (j - prevI) / (at - prevI);
+        occ[j] = prevV + (v - prevV) * t;
+      }
+      prevI = at;
+      prevV = v;
+      if (at === k.n - 1) break;
+    }
+    out.push(occ);
+  }
+
+  // Normalised against the densest point in this particular scene, so the
+  // control means the same thing whether there are 200 curves or 4000, and so
+  // the striding above cannot change what a given setting looks like.
+  const inv = 1 / peak;
+  for (const occ of out) {
+    for (let i = 0; i < occ.length; i++) {
+      occ[i] = 1 - Math.exp(-strength * 3 * (occ[i] * inv));
+    }
+  }
+  return out;
+}
+
 export function prepareCurves(curves, opts, gradient) {
   const imageAt = opts.imageAt || null;
   const vorticityGain = opts.vorticityGain == null ? 1 : opts.vorticityGain;
@@ -182,6 +262,7 @@ export function prepareCurves(curves, opts, gradient) {
     }
     const tan = tangents(pos, n);
     const nor = rmfNormals(pos, tan, n, c.rnd * Math.PI * 2);
+    const occ = c.occ || null;
     const curv = curvatures(tan, n, opts.h * scale);
     const col = new Float32Array(n * 3);
     const wid = new Float32Array(n);
@@ -246,7 +327,7 @@ export function prepareCurves(curves, opts, gradient) {
       col[i3] = rgb[0]; col[i3 + 1] = rgb[1]; col[i3 + 2] = rgb[2];
     }
 
-    items.push({ pos, tan, nor, col, wid, n, rnd: c.rnd });
+    items.push({ pos, tan, nor, col, wid, occ, n, rnd: c.rnd });
     totalSamples += n;
   }
   return { items, fit, stats, totalSamples };
@@ -260,6 +341,10 @@ class Chunk {
     // must stay two-sided.
     this.closed = !!closed;
     this.positions = []; this.normals = []; this.colors = []; this.params = []; this.indices = [];
+    // The curve direction at each vertex. Strand-like geometry wants a
+    // highlight that runs along the tangent rather than around the normal, and
+    // that cannot be reconstructed in the shader from anything already here.
+    this.tangents = [];
     // One entry per curve: where its indices start, how many, and its centroid.
     // Transparent draws reorder these back to front; opaque draws ignore them.
     this.ranges = [];
@@ -271,6 +356,7 @@ class Chunk {
       positions: new Float32Array(this.positions),
       normals: new Float32Array(this.normals),
       colors: new Float32Array(this.colors),
+      tangents: new Float32Array(this.tangents),
       params: new Float32Array(this.params),
       indices: new Uint16Array(this.indices),
       closed: this.closed,
@@ -315,6 +401,7 @@ export function buildMesh(prepared, opts) {
     const rangeStart = chunk.indices.length;
     const base = chunk.vertexCount;
     const { pos, tan, nor, col, wid } = it;
+    const occ = it.occ;
 
     for (let i = 0; i < n; i++) {
       const i3 = i * 3;
@@ -324,11 +411,12 @@ export function buildMesh(prepared, opts) {
       const ux = nor[i3], uy = nor[i3 + 1], uz = nor[i3 + 2];
       const wx = ty * uz - tz * uy, wy = tz * ux - tx * uz, wz = tx * uy - ty * ux;
       const w = wid[i];
+      const ao = occ ? occ[i] : 0;
       rgb[0] = col[i3]; rgb[1] = col[i3 + 1]; rgb[2] = col[i3 + 2];
 
       if (mode === 0) {
-        pushVert(chunk, px - ux * w, py - uy * w, pz - uz * w, wx, wy, wz, rgb, s, it.rnd, 0);
-        pushVert(chunk, px + ux * w, py + uy * w, pz + uz * w, wx, wy, wz, rgb, s, it.rnd, 1);
+        pushVert(chunk, px - ux * w, py - uy * w, pz - uz * w, wx, wy, wz, rgb, s, it.rnd, 0, tx, ty, tz, ao);
+        pushVert(chunk, px + ux * w, py + uy * w, pz + uz * w, wx, wy, wz, rgb, s, it.rnd, 1, tx, ty, tz, ao);
       } else if (mode === 1) {
         const rx = w, ry = Math.max(1e-6, w * opts.aspect);
         for (let k = 0; k < sides; k++) {
@@ -341,7 +429,7 @@ export function buildMesh(prepared, opts) {
           const ny = (uy * ca) / rx + (wy * sa) / ry;
           const nz = (uz * ca) / rx + (wz * sa) / ry;
           const nl = Math.hypot(nx, ny, nz) || 1;
-          pushVert(chunk, px + ox, py + oy, pz + oz, nx / nl, ny / nl, nz / nl, rgb, s, it.rnd, k / sides);
+          pushVert(chunk, px + ox, py + oy, pz + oz, nx / nl, ny / nl, nz / nl, rgb, s, it.rnd, k / sides, tx, ty, tz, ao);
         }
       } else if (mode === 3) {
         const rx = w, ry = Math.max(1e-6, w * opts.aspect);
@@ -355,11 +443,11 @@ export function buildMesh(prepared, opts) {
           const k2 = (k + 1) & 3;
           const nl = Math.hypot(fnx[k], fny[k], fnz[k]) || 1;
           const nx = fnx[k] / nl, ny = fny[k] / nl, nz = fnz[k] / nl;
-          pushVert(chunk, px + cx[k], py + cy[k], pz + cz[k], nx, ny, nz, rgb, s, it.rnd, k / 4);
-          pushVert(chunk, px + cx[k2], py + cy[k2], pz + cz[k2], nx, ny, nz, rgb, s, it.rnd, (k + 1) / 4);
+          pushVert(chunk, px + cx[k], py + cy[k], pz + cz[k], nx, ny, nz, rgb, s, it.rnd, k / 4, tx, ty, tz, ao);
+          pushVert(chunk, px + cx[k2], py + cy[k2], pz + cz[k2], nx, ny, nz, rgb, s, it.rnd, (k + 1) / 4, tx, ty, tz, ao);
         }
       } else {
-        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5);
+        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5, tx, ty, tz, ao);
       }
     }
 
@@ -405,10 +493,11 @@ export function buildMesh(prepared, opts) {
         const wz0 = tan[i3] * uy - tan[i3 + 1] * ux;
         const w = wid[i];
         const s = end ? 1 : 0;
+        const ao = occ ? occ[i] : 0;
         rgb[0] = col[i3]; rgb[1] = col[i3 + 1]; rgb[2] = col[i3 + 2];
 
         const centre = chunk.vertexCount;
-        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5);
+        pushVert(chunk, px, py, pz, tx, ty, tz, rgb, s, it.rnd, 0.5, tx, ty, tz, ao);
 
         const ring = mode === 1 ? sides : 4;
         const rx = w, ry = Math.max(1e-6, w * opts.aspect);
@@ -427,7 +516,7 @@ export function buildMesh(prepared, opts) {
             oy = uy * rx * sx + wy0 * ry * sy;
             oz = uz * rx * sx + wz0 * ry * sy;
           }
-          pushVert(chunk, px + ox, py + oy, pz + oz, tx, ty, tz, rgb, s, it.rnd, k / ring);
+          pushVert(chunk, px + ox, py + oy, pz + oz, tx, ty, tz, rgb, s, it.rnd, k / ring, tx, ty, tz, ao);
         }
         for (let k = 0; k < ring; k++) {
           const a = centre + 1 + k, b = centre + 1 + ((k + 1) % ring);
@@ -456,12 +545,13 @@ export function buildMesh(prepared, opts) {
   return chunks;
 }
 
-function pushVert(chunk, x, y, z, nx, ny, nz, rgb, s, rnd, v) {
+function pushVert(chunk, x, y, z, nx, ny, nz, rgb, s, rnd, v, tx, ty, tz, occ) {
   chunk.positions.push(x, y, z);
   chunk.normals.push(nx, ny, nz);
   chunk.colors.push(rgb[0], rgb[1], rgb[2]);
+  chunk.tangents.push(tx, ty, tz);
   // s runs along the curve, rnd is a per-curve constant, v runs across the
   // form (edge to edge on a ribbon, around a tube or box). Procedural
   // texturing needs that second coordinate; nothing else uses it.
-  chunk.params.push(s, rnd, v);
+  chunk.params.push(s, rnd, v, occ);
 }

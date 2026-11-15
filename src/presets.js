@@ -222,4 +222,63 @@ export const PRESETS = [
       look: { renderMode: 0, ambient: 0.5, rim: 0.5, specular: 0.35, fogDensity: 0.16 },
     },
   },
+  {
+    name: 'Sunlit filaments',
+    patch: {
+      field: {
+        fieldA: 'kraichnan', paramsA: { modes: 48, kmin: 0.5, kmax: 9, slope: 0.833, seed: 5, sweep: 0.4 }, domain: 2.2,
+      },
+      trace: { even: true, dSepFrac: 0.04, maxCurves: 900, seedCount: 1200, stepFrac: 0.008, maxSteps: 480, seedMode: 0, seedRadiusFrac: 0.85 },
+      geom: { geomMode: 1, sides: 6, aspect: 1, width: 0.009, widthMode: 1, taperPower: 0.5, twist: 0, smoothIters: 1, caps: true },
+      color: { colorMode: 4, colorCycles: 1, ...grad('Ember') },
+      look: {
+        renderMode: 0, ambient: 0.6, rim: 0.25, specular: 0.4, fogDensity: 0.12,
+        lightDir: [0.35, 0.5, 0.79],
+        rtEnabled: true, rtSamples: 96, rtSunShadow: false, rtSkyLight: false,
+        strand: 0.9, strandExp: 72, strandShift: 0.1, strandSheen: 0.7, occlusion: 0.85, occlusionRadius: 0.05,
+        envMode: 1, skyZenith: '#27477f', skyHorizon: '#d9c6a6', skyGround: '#241a12',
+        sunColor: '#fff2d8', sunSize: 2, sunIntensity: 7, haze: 0.45, inscatter: 0.8,
+        toneMap: 1, outExposure: 1.1,
+      },
+    },
+  },
+  {
+    name: 'Studio glass',
+    patch: {
+      field: {
+        fieldA: 'hopf', domain: 1.6,
+      },
+      trace: { even: false, seedMode: 1, seedCount: 280, maxCurves: 280, seedRadiusFrac: 0.75, stepFrac: 0.008, maxSteps: 820, bidirectional: false, boundsFrac: 3 },
+      geom: { geomMode: 1, sides: 6, aspect: 1, width: 0.012, widthMode: 0, twist: 0, smoothIters: 1, caps: true },
+      color: { colorMode: 6, colorCycles: 1, ...grad('Sea ice') },
+      look: {
+        renderMode: 0, material: 1, ambient: 0.5, rim: 0.4, specular: 0.7, shininess: 64, fogDensity: 0.1,
+        lightDir: [0.45, 0.72, 0.52],
+        rtEnabled: true, rtSamples: 128, rtAperture: 0.03, rtSunShadow: false, rtSkyLight: false,
+        strand: 0.6, strandExp: 110, strandSheen: 0.4, occlusion: 0.7, occlusionRadius: 0.07,
+        envMode: 1, skyZenith: '#1d2d4d', skyHorizon: '#9fb4c7', skyGround: '#10131a',
+        sunColor: '#ffffff', sunSize: 4, sunIntensity: 5, haze: 0.55, inscatter: 0.4,
+        toneMap: 1, outExposure: 1.2,
+      },
+    },
+  },
+  {
+    name: 'Macro bokeh',
+    patch: {
+      field: {
+        fieldA: 'curl', paramsA: { scale: 0.8, octaves: 2, gain: 0.5, drift: 0.1 }, domain: 1.6,
+      },
+      trace: { even: true, dSepFrac: 0.05, maxCurves: 700, seedCount: 900, stepFrac: 0.01, maxSteps: 420, seedMode: 0 },
+      geom: { geomMode: 0, width: 0.016, widthMode: 1, taperPower: 0.5, twist: 0.6, smoothIters: 1 },
+      color: { colorMode: 0, colorCycles: 1, ...grad('Rosewater') },
+      look: {
+        renderMode: 0, ambient: 0.55, rim: 0.5, specular: 0.5, fogDensity: 0.18,
+        rtEnabled: true, rtSamples: 256, rtAperture: 0.14, rtFocus: 0, rtSunShadow: false, rtSkyLight: false,
+        strand: 0.85, strandExp: 40, strandSheen: 0.9, occlusion: 0.8, occlusionRadius: 0.06,
+        envMode: 1, skyZenith: '#3a2d52', skyHorizon: '#e2b9a8', skyGround: '#1b1016',
+        sunColor: '#ffd9b0', sunSize: 6, sunIntensity: 4, haze: 0.7, inscatter: 1.0,
+        toneMap: 1, outExposure: 1.15,
+      },
+    },
+  },
 ];

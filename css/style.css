@@ -278,6 +278,30 @@ input[type="color"]::-webkit-color-swatch { border: none; border-radius: 1px; }
 
 /* ---------------------------------------------------------------- status */
 
+/* Credit line. Bottom right, out of the way of the status readout on the left,
+   and dimmed enough that it never competes with the artwork. */
+#credit {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+  z-index: 3;
+}
+
+@media (max-width: 720px) {
+  /* The status line wraps to full width on a narrow screen, so the credit
+     would sit on top of it. */
+  #credit { position: static; display: block; text-align: right; padding: 8px 12px; }
+}
+
 #status {
   position: fixed;
   left: 350px;

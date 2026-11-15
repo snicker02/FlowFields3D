@@ -1,7 +1,10 @@
 // renderer.js — WebGL1 renderer. Everything draws through renderScene(), the
 // single entry point, so PNG export and the live view can never drift apart.
 
-import { RIBBON_VS, RIBBON_FS, BG_VS, BG_FS } from './shaders.js';
+import {
+  RIBBON_VS, RIBBON_FS, BG_VS, BG_FS, DEPTH_VS, DEPTH_FS, QUAD_VS, ACCUM_FS, PRESENT_FS,
+} from './shaders.js';
+import { createTarget, destroyTarget, lightMatrix } from './rt.js';
 import { hexToRgb } from './palette.js';
 
 function compile(gl, type, src, label) {
@@ -46,17 +49,37 @@ export class Renderer {
       nor: gl.getAttribLocation(this.prog, 'aNormal'),
       col: gl.getAttribLocation(this.prog, 'aColor'),
       par: gl.getAttribLocation(this.prog, 'aParam'),
+      tan: gl.getAttribLocation(this.prog, 'aTangent'),
     };
     this.uni = uniforms(gl, this.prog, ['uMVP', 'uModelView', 'uNormalMat', 'uLightDir', 'uLightColor',
       'uSkyColor', 'uGroundColor', 'uAmbient', 'uSpecular', 'uShininess', 'uRim', 'uFogColor',
       'uFogDensity', 'uFogStart', 'uFlowPhase', 'uFlowFreq', 'uFlowStrength', 'uOpacity', 'uFlat', 'uExposure',
       'uMaterial', 'uTexMode', 'uTexScale', 'uTexRepeat', 'uTexAmount', 'uTexSoft',
       'uTravelMode', 'uTravelLen', 'uTravelPhase', 'uTravelSoft', 'uTravelStagger',
-      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uDither', 'uTexImage', 'uTexHasImage']);
+      'uTravelCount', 'uTravelGlow', 'uTravelPass', 'uDither', 'uTexImage', 'uTexHasImage',
+      'uSunShadow', 'uSunVP', 'uSunMap', 'uSkyLight', 'uSkyVP', 'uSkyMap', 'uSkyDir',
+      'uShadowBias', 'uEnvMode', 'uCamPos', 'uInscatter',
+      'uStrand', 'uStrandExp', 'uStrandShift', 'uStrandSheen', 'uStrandDiffuse', 'uOcclusion',
+      'uZenith', 'uHorizon', 'uGroundCol', 'uSunDir', 'uSunColor', 'uSunSize', 'uSunIntensity', 'uHaze']);
 
     this.bgProg = link(gl, BG_VS, BG_FS, 'Background');
     this.bgAttr = gl.getAttribLocation(this.bgProg, 'aXY');
-    this.bgUni = uniforms(gl, this.bgProg, ['uTop', 'uBottom', 'uVignette', 'uUVRect']);
+    this.bgUni = uniforms(gl, this.bgProg, ['uTop', 'uBottom', 'uVignette', 'uUVRect', 'uEnvMode',
+      'uCamRight', 'uCamUp', 'uCamFwd', 'uTanHalfFov', 'uAspect',
+      'uZenith', 'uHorizon', 'uGroundCol', 'uSunDir', 'uSunColor', 'uSunSize', 'uSunIntensity', 'uHaze']);
+    this.depthProg = link(gl, DEPTH_VS, DEPTH_FS, 'Shadow depth');
+    this.depthAttr = gl.getAttribLocation(this.depthProg, 'aPos');
+    this.depthUni = uniforms(gl, this.depthProg, ['uLightVP']);
+
+    this.accumProg = link(gl, QUAD_VS, ACCUM_FS, 'Accumulate');
+    this.accumAttr = gl.getAttribLocation(this.accumProg, 'aXY');
+    this.accumUni = uniforms(gl, this.accumProg, ['uPrev', 'uSample', 'uWeight', 'uDitherAmt']);
+
+    this.presentProg = link(gl, QUAD_VS, PRESENT_FS, 'Present');
+    this.presentAttr = gl.getAttribLocation(this.presentProg, 'aXY');
+    this.presentUni = uniforms(gl, this.presentProg, ['uTex', 'uExposureOut', 'uToneMap']);
+
+    this.rt = { sample: null, accum: [null, null], read: 0, sun: null, sky: null, shadowSize: 0, ok: true };
     this.bgBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.bgBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -87,6 +110,7 @@ export class Renderer {
       };
       this.buffers.push({
         pos: mk(c.positions), nor: mk(c.normals), col: mk(c.colors), par: mk(c.params),
+        tanb: mk(c.tangents),
         idx: mk(c.indices, gl.ELEMENT_ARRAY_BUFFER),
         count: c.indexCount,
         mode: c.mode,
@@ -137,6 +161,20 @@ export class Renderer {
     gl.uniform1f(this.bgUni.uVignette, style.vignette);
     if (uvRect) gl.uniform4f(this.bgUni.uUVRect, uvRect[0], uvRect[1], uvRect[2], uvRect[3]);
     else gl.uniform4f(this.bgUni.uUVRect, 0, 0, 1, 1);
+    gl.uniform1f(this.bgUni.uEnvMode, style.envMode === 1 ? 1 : 0);
+    gl.uniform3fv(this.bgUni.uCamRight, look.camRight || [1, 0, 0]);
+    gl.uniform3fv(this.bgUni.uCamUp, look.camUp || [0, 1, 0]);
+    gl.uniform3fv(this.bgUni.uCamFwd, look.camFwd || [0, 0, -1]);
+    gl.uniform1f(this.bgUni.uTanHalfFov, look.tanHalfFov || 0.4);
+    gl.uniform1f(this.bgUni.uAspect, width / Math.max(1, height));
+    gl.uniform3fv(this.bgUni.uZenith, hexToRgb(style.skyZenith));
+    gl.uniform3fv(this.bgUni.uHorizon, hexToRgb(style.skyHorizon));
+    gl.uniform3fv(this.bgUni.uGroundCol, hexToRgb(style.skyGround));
+    gl.uniform3fv(this.bgUni.uSunDir, normalise(style.lightDir));
+    gl.uniform3fv(this.bgUni.uSunColor, hexToRgb(style.sunColor));
+    gl.uniform1f(this.bgUni.uSunSize, style.sunSize);
+    gl.uniform1f(this.bgUni.uSunIntensity, style.sunIntensity);
+    gl.uniform1f(this.bgUni.uHaze, style.haze);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disableVertexAttribArray(this.bgAttr);
 
@@ -199,7 +237,18 @@ export class Renderer {
     gl.uniform1f(u.uRim, style.rim);
     gl.uniform3fv(u.uFogColor, hexToRgb(style.fogColor));
     gl.uniform1f(u.uFogDensity, style.fogDensity);
-    gl.uniform1f(u.uFogStart, style.fogStart);
+    // Fog has to be measured from the scene, not from the world origin. The
+    // geometry is auto-fitted into the unit ball, so the near edge of whatever
+    // is on screen sits at (camera distance - 1) whichever field is loaded and
+    // however far out the camera is. An absolute start distance meant the
+    // nearest ribbon already carried some fog — a flat wash over everything,
+    // with only the remainder left to act as a depth cue — and that it meant
+    // something different at every zoom level. fogBegin is now a fraction of
+    // the scene's own two-unit depth, so 0 always starts the fade exactly at
+    // the front of the subject and the control behaves the same at any zoom.
+    const camPos = look.camPos || [0, 0, 3];
+    const nearEdge = Math.max(0, Math.hypot(camPos[0], camPos[1], camPos[2]) - 1);
+    gl.uniform1f(u.uFogStart, nearEdge + (style.fogBegin || 0) * 2);
     gl.uniform1f(u.uFlowPhase, style.flowPhase);
     gl.uniform1f(u.uFlowFreq, style.flowFreq);
     gl.uniform1f(u.uFlowStrength, style.flowStrength);
@@ -227,6 +276,47 @@ export class Renderer {
     gl.uniform1f(u.uTravelGlow, style.travelGlow);
     gl.uniform1f(u.uTravelPass, 0);
 
+    // Sky model, shared with the background and with the mirror material.
+    const env = style.envMode === 1 ? 1 : 0;
+    gl.uniform1f(u.uEnvMode, env);
+    gl.uniform1f(u.uInscatter, style.inscatter == null ? 0.6 : style.inscatter);
+    gl.uniform1f(u.uStrand, style.strand == null ? 0 : style.strand);
+    gl.uniform1f(u.uStrandExp, style.strandExp == null ? 48 : style.strandExp);
+    gl.uniform1f(u.uStrandShift, style.strandShift == null ? 0.12 : style.strandShift);
+    gl.uniform1f(u.uStrandSheen, style.strandSheen == null ? 0.6 : style.strandSheen);
+    gl.uniform1f(u.uStrandDiffuse, style.strandDiffuse == null ? 0.5 : style.strandDiffuse);
+    gl.uniform1f(u.uOcclusion, style.occlusion == null ? 0 : style.occlusion);
+    gl.uniform3fv(u.uCamPos, look.camPos || [0, 0, 3]);
+    gl.uniform3fv(u.uZenith, hexToRgb(style.skyZenith));
+    gl.uniform3fv(u.uHorizon, hexToRgb(style.skyHorizon));
+    gl.uniform3fv(u.uGroundCol, hexToRgb(style.skyGround));
+    gl.uniform3fv(u.uSunDir, normalise(style.lightDir));
+    gl.uniform3fv(u.uSunColor, hexToRgb(style.sunColor));
+    gl.uniform1f(u.uSunSize, style.sunSize);
+    gl.uniform1f(u.uSunIntensity, style.sunIntensity);
+    gl.uniform1f(u.uHaze, style.haze);
+
+    // Ray-traced visibility. Present only while a sample is being accumulated;
+    // the live preview between refinements runs without it.
+    const rt = look.rt || null;
+    gl.uniform1f(u.uSunShadow, rt && rt.sunVP ? 1 : 0);
+    gl.uniform1f(u.uSkyLight, rt && rt.skyVP ? 1 : 0);
+    gl.uniform1f(u.uShadowBias, rt ? rt.bias : 0.002);
+    if (rt && rt.sunVP) {
+      gl.uniformMatrix4fv(u.uSunVP, false, rt.sunVP);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.rt.sun.tex);
+      gl.uniform1i(u.uSunMap, 1);
+    }
+    if (rt && rt.skyVP) {
+      gl.uniformMatrix4fv(u.uSkyVP, false, rt.skyVP);
+      gl.uniform3fv(u.uSkyDir, rt.skyDir);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.rt.sky.tex);
+      gl.uniform1i(u.uSkyMap, 2);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+
     if (needsSort) this.sortForView(look.viewDir);
 
     const drawAll = () => {
@@ -236,7 +326,8 @@ export class Renderer {
         bind(gl, b.pos, this.attr.pos, 3);
         bind(gl, b.nor, this.attr.nor, 3);
         bind(gl, b.col, this.attr.col, 3);
-        bind(gl, b.par, this.attr.par, 3);
+        bind(gl, b.par, this.attr.par, 4);
+        bind(gl, b.tanb, this.attr.tan, 3);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
         gl.drawElements(b.mode === 'lines' ? gl.LINES : gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
       }
@@ -302,6 +393,143 @@ Renderer.prototype.setTexture = function setTexture(drawable) {
   this.texture = tex;
 };
 
+/**
+ * Allocate the offscreen targets. Returns false if the driver will not give us
+ * a complete framebuffer, which is the caller's cue to fall back to drawing
+ * straight to the canvas rather than showing a black screen.
+ */
+Renderer.prototype.ensureTargets = function ensureTargets(width, height, shadowSize) {
+  const gl = this.gl, r = this.rt;
+  const sizeChanged = !r.sample || r.sample.width !== width || r.sample.height !== height;
+  if (sizeChanged) {
+    destroyTarget(gl, r.sample);
+    destroyTarget(gl, r.accum[0]);
+    destroyTarget(gl, r.accum[1]);
+    r.sample = createTarget(gl, width, height, true);
+    r.accum[0] = createTarget(gl, width, height, false);
+    r.accum[1] = createTarget(gl, width, height, false);
+    r.read = 0;
+  }
+  if (shadowSize && r.shadowSize !== shadowSize) {
+    destroyTarget(gl, r.sun);
+    destroyTarget(gl, r.sky);
+    r.sun = createTarget(gl, shadowSize, shadowSize, true);
+    r.sky = createTarget(gl, shadowSize, shadowSize, true);
+    r.shadowSize = shadowSize;
+  }
+  r.ok = !!(r.sample && r.sample.ok && r.accum[0].ok && r.accum[1].ok
+    && (!shadowSize || (r.sun.ok && r.sky.ok)));
+  return r.ok;
+};
+
+/** Depth-only pass from one direction, packed into a colour target. */
+Renderer.prototype.renderShadow = function renderShadow(target, lightVP) {
+  const gl = this.gl;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+  gl.viewport(0, 0, target.width, target.height);
+  gl.disable(gl.BLEND);
+  // Cleared to the far plane, so anything the light never reached counts as lit
+  // rather than as shadowed.
+  gl.clearColor(1, 1, 1, 1);
+  gl.depthMask(true);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  // Back faces cast: a closed tube's far wall is the surface the light hits
+  // first, and using it moves the depth comparison away from the lit surface,
+  // which is most of what stops a ribbon shadowing itself into stripes.
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.FRONT);
+
+  gl.useProgram(this.depthProg);
+  gl.uniformMatrix4fv(this.depthUni.uLightVP, false, lightVP);
+  for (const b of this.buffers) {
+    if (b.mode === 'lines') continue;              // no thickness, casts nothing
+    bind(gl, b.pos, this.depthAttr, 3);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.idx);
+    gl.drawElements(gl.TRIANGLES, b.count, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.disableVertexAttribArray(this.depthAttr);
+  gl.disable(gl.CULL_FACE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+};
+
+Renderer.prototype.drawQuad = function drawQuad(prog, attr) {
+  const gl = this.gl;
+  gl.bindBuffer(gl.ARRAY_BUFFER, this.bgBuf);
+  gl.enableVertexAttribArray(attr);
+  gl.vertexAttribPointer(attr, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disableVertexAttribArray(attr);
+};
+
+/** Fold one rendered sample into the running mean. */
+Renderer.prototype.accumulate = function accumulate(sampleIndex) {
+  const gl = this.gl, r = this.rt;
+  const src = r.accum[r.read], dst = r.accum[1 - r.read];
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+  gl.viewport(0, 0, dst.width, dst.height);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+  gl.useProgram(this.accumProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(this.accumUni.uPrev, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, r.sample.tex);
+  gl.uniform1i(this.accumUni.uSample, 1);
+  gl.uniform1f(this.accumUni.uWeight, 1 / (sampleIndex + 1));
+  // Only needed once the 1/(n+1) step is smaller than a code value.
+  gl.uniform1f(this.accumUni.uDitherAmt, sampleIndex > 8 ? 1 / 255 : 0);
+  this.drawQuad(this.accumProg, this.accumAttr);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  r.read = 1 - r.read;
+};
+
+/** Tone map the accumulated image onto whatever framebuffer is bound. */
+Renderer.prototype.present = function present(style, width, height) {
+  const gl = this.gl, r = this.rt;
+  gl.viewport(0, 0, width, height);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+  gl.useProgram(this.presentProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, r.accum[r.read].tex);
+  gl.uniform1i(this.presentUni.uTex, 0);
+  gl.uniform1f(this.presentUni.uExposureOut, style.outExposure == null ? 1 : style.outExposure);
+  gl.uniform1f(this.presentUni.uToneMap, style.toneMap | 0);
+  this.drawQuad(this.presentProg, this.presentAttr);
+};
+
+/**
+ * One refinement step: shadow maps from this sample's directions, the scene
+ * into the sample target, then fold it into the mean. `look` must already
+ * carry this sample's jitter.
+ */
+Renderer.prototype.renderSample = function renderSample(look, style, width, height, sampleIndex, rtCfg, uvRect) {
+  const gl = this.gl;
+  const lk = { ...look, rt: null };
+
+  if (rtCfg.sunShadow || rtCfg.skyLight) {
+    const rt = { bias: rtCfg.bias, sunVP: null, skyVP: null, skyDir: rtCfg.skyDir };
+    if (rtCfg.sunShadow) {
+      rt.sunVP = lightMatrix(rtCfg.sunDir);
+      this.renderShadow(this.rt.sun, rt.sunVP);
+    }
+    if (rtCfg.skyLight) {
+      rt.skyVP = lightMatrix(rtCfg.skyDir);
+      this.renderShadow(this.rt.sky, rt.skyVP);
+    }
+    lk.rt = rt;
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, this.rt.sample.fb);
+  this.renderScene(lk, style, width, height, uvRect);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  this.accumulate(sampleIndex);
+};
+
 Renderer.prototype.sortForView = function sortForView(viewDir) {
   const gl = this.gl;
   // Quantised so a slow orbit does not rebuild the buffers every frame.
@@ -329,6 +557,11 @@ Renderer.prototype.sortForView = function sortForView(viewDir) {
     gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, dst);
   }
 };
+
+function normalise(v) {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
 
 function bind(gl, buf, loc, size) {
   if (loc < 0) return;
