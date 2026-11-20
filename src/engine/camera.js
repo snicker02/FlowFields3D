@@ -85,7 +85,7 @@ export class OrbitCamera {
       canvas.setPointerCapture(e.pointerId);
     };
     const move = (e) => {
-      if (!state.drag) return;
+      if (!state.drag || state.pinch) return;   // a second finger hands over to pinch / pan
       const dx = e.clientX - state.x, dy = e.clientY - state.y;
       state.x = e.clientX; state.y = e.clientY;
       if (state.drag === 1) {
@@ -117,7 +117,7 @@ export class OrbitCamera {
     const touches = new Map();
     canvas.addEventListener('touchstart', (e) => {
       for (const t of e.changedTouches) touches.set(t.identifier, [t.clientX, t.clientY]);
-      if (touches.size === 2) state.pinch = pinchDist(touches);
+      if (touches.size === 2) { state.pinch = pinchDist(touches); state.mid = pinchMid(touches); state.drag = 0; }
     });
     canvas.addEventListener('touchmove', (e) => {
       for (const t of e.changedTouches) touches.set(t.identifier, [t.clientX, t.clientY]);
@@ -125,15 +125,28 @@ export class OrbitCamera {
         const d = pinchDist(touches);
         this.dist = Math.max(0.15, Math.min(30, this.dist * (state.pinch / d)));
         state.pinch = d;
+        // two fingers moving together pan, like shift-drag
+        const m = pinchMid(touches);
+        if (state.mid) {
+          const dx = m[0] - state.mid[0], dy = m[1] - state.mid[1];
+          const s = this.dist * 0.0016, rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);
+          this.target[0] -= dx * s * rx; this.target[2] -= dx * s * rz; this.target[1] += dy * s;
+        }
+        state.mid = m;
         onChange();
         e.preventDefault();
       }
     }, { passive: false });
-    const clear = (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); if (touches.size < 2) state.pinch = 0; };
+    const clear = (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); if (touches.size < 2) { state.pinch = 0; state.mid = null; } };
     canvas.addEventListener('touchend', clear);
     canvas.addEventListener('touchcancel', clear);
     return this;
   }
+}
+
+function pinchMid(map) {
+  const [a, b] = [...map.values()];
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 }
 
 function pinchDist(map) {

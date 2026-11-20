@@ -7,6 +7,7 @@
 // The tracer runs in time slices from the animation loop, so a heavy field
 // never freezes the page and the progress bar stays honest.
 
+import { initPanelTabs } from './ui/tabs.js';
 import { Noise } from './engine/noise.js';
 import { makeEvaluator, FIELD_BY_ID } from './engine/fields.js';
 import { foldStepScale } from './engine/fractal.js';
@@ -26,7 +27,7 @@ import { Panel } from './ui/panel.js';
 import { GradientEditor } from './ui/gradient.js';
 import { downloadBlob, stamp, chunksToOBJ, preparedToSVG, stateToJSON, parseStateJSON, resolveExportSize } from './io/exporters.js';
 
-const BUILD = '0.3.1';
+const BUILD = '0.4.0';
 
 const app = {
   state: defaultState(),
@@ -77,7 +78,7 @@ function boot() {
 
   const panelRoot = el('panel');
   app.panel = new Panel(panelRoot, app.state, {
-    onChange: (level) => { scheduleHistory(); schedule(level); },
+    onChange: (level) => { scheduleHistory(); if (holdChange(level)) return; schedule(level); },
     gradientMount: (mount) => {
       app.gradientEditor = new GradientEditor(mount, app.gradient, () => { scheduleHistory(); schedule('geom'); });
     },
@@ -88,10 +89,15 @@ function boot() {
     if (e.target instanceof HTMLInputElement && e.target.type === 'range') app.draft = true;
   }, true);
   window.addEventListener('pointerup', () => {
-    if (app.draft) { app.draft = false; if (app.lastLevel === 'trace') schedule('trace'); else schedule('geom'); }
+    if (!app.draft) return;
+    app.draft = false;
+    if (app.held) return;               // confirm mode: the change waits for Apply
+    if (app.lastLevel === 'trace') schedule('trace'); else schedule('geom');
   });
 
   buildToolbar();
+  initConfirm();
+  initPanelTabs({ sidebar: el('sidebar'), toolbar: el('toolbar'), panel: panelRoot, onLayout: () => invalidate() });
   window.addEventListener('resize', () => { invalidate(); });
   window.addEventListener('keydown', onKey);
 
@@ -99,6 +105,42 @@ function boot() {
   applyPreset(0);
   pushHistory();                        // the state undo eventually returns to
   requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------------------- confirm changes
+// Retracing thousands of streamlines on every slider step is slow, above all
+// on phones. With "Confirm changes" on (the default) trace- and geometry-level
+// edits wait for Apply (or Enter); colour, light and camera stay live. Retrace,
+// Shuffle and presets act at once and take any held change with them.
+
+let confirmMode = true;
+try { const v = localStorage.getItem('ff3d.confirm'); if (v !== null) confirmMode = v === '1'; } catch (_) { /* storage unavailable */ }
+
+function holdChange(level) {
+  if (!confirmMode || (level !== 'trace' && level !== 'geom')) return false;
+  if (app.held !== 'trace') app.held = level;     // a held trace already covers geometry
+  updateApply();
+  return true;
+}
+function updateApply() {
+  const b = el('apply');
+  if (b) b.hidden = !app.held;
+}
+function applyHeld() {
+  const level = app.held;
+  if (!level) return;
+  app.held = null; updateApply();
+  schedule(level);
+}
+function initConfirm() {
+  el('apply').addEventListener('click', applyHeld);
+  const c = el('confirm');
+  c.checked = confirmMode;
+  c.addEventListener('change', () => {
+    confirmMode = c.checked;
+    try { localStorage.setItem('ff3d.confirm', confirmMode ? '1' : '0'); } catch (_) { /* storage unavailable */ }
+    if (!confirmMode) applyHeld();
+  });
 }
 
 // ---------------------------------------------------------------- scheduling
@@ -155,6 +197,7 @@ function traceConfig() {
 }
 
 function startTrace() {
+  if (app.held) { app.held = null; updateApply(); }
   const s = app.state;
   const ctx = {
     noise: new Noise(s.field.noiseSeed | 0),
@@ -281,6 +324,7 @@ function ensureOcclusion() {
 
 function rebuildGeometry() {
   app.pendingGeom = false;
+  if (app.held === 'geom') { app.held = null; updateApply(); }
   if (!app.curves.length) { setStatus('No streamlines survived — try a larger escape radius or a smaller minimum length.'); return; }
   const s = app.state;
   const t0 = performance.now();
@@ -642,6 +686,11 @@ function onKey(e) {
   if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (k === 'Enter' && app.held && !e.repeat) {
+    const t = e.target;
+    if (!(t && (t.tagName === 'BUTTON' || t.tagName === 'TEXTAREA'))) { e.preventDefault(); applyHeld(); return; }
+  }
 
   // h is deliberately not gated on where the focus is: it is the way out of a
   // hidden panel, so it has to work from anywhere. No control here takes typed
