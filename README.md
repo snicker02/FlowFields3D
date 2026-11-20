@@ -46,6 +46,17 @@ After tracing, everything is fitted into the unit ball. That is why the Lorenz
 attractor (span ≈ 60) and the gyroid (span ≈ 1) can share one camera, one set
 of light settings and one ribbon width.
 
+## Phones and confirm mode
+
+**Confirm changes before applying** (in the toolbar / *Start* tab, on by default): retracing
+thousands of streamlines on every slider step is slow, above all on a phone. With it on,
+trace- and geometry-level edits wait for **⏎ Apply changes** (or Enter); colour, light and
+camera stay live, and Retrace, Shuffle and presets act at once. The choice is remembered.
+
+**On a phone** the view is docked at the top (left in landscape) and the panel becomes tabs
+under it: *Start* (preset, retrace, exports) and then one tab per section. One finger orbits,
+two fingers pan, pinch zooms.
+
 ## Fields
 
 26 of them, each with its own parameters:

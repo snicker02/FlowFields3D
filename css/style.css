@@ -340,3 +340,60 @@ input[type="color"]::-webkit-color-swatch { border: none; border-radius: 1px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ---------------------------------------------------------- confirm mode */
+.confirm { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.confirm input { accent-color: var(--brass); }
+#apply {
+  position: fixed; top: 12px; right: 12px; z-index: 6;
+  background: var(--brass); color: #15120a; border-color: var(--brass); font-weight: 600;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
+}
+#apply[hidden] { display: none; }
+.touch-only { display: none; }
+@media (pointer: coarse) {
+  .touch-only { display: block; }
+  .mouse-only { display: none; }
+  input[type=range] { height: 28px; }
+  button, select, .filebutton { min-height: 36px; }
+  .confirm input { width: 18px; height: 18px; }
+}
+
+/* -------------------------------------------- phone tab layout (tabs.js) */
+#tabbar { display: none; }
+body.tabbed #view { inset: 0 0 auto 0; height: 50dvh; }
+body.tabbed #sidebar {
+  top: 50dvh; left: 0; right: 0; bottom: 0; width: auto; max-width: none;
+  border-right: 0; border-top: 1px solid var(--line); transform: none; visibility: visible;
+  background: var(--panel); backdrop-filter: none;
+}
+body.tabbed #masthead, body.tabbed #show, body.tabbed #hide { display: none; }
+body.tabbed #tabbar {
+  display: flex; gap: 6px; overflow-x: auto; flex: none; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); scrollbar-width: none;
+}
+body.tabbed #tabbar::-webkit-scrollbar { display: none; }
+#tabbar .tab {
+  flex: none; white-space: nowrap; min-height: 34px; padding: 0 13px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-size: 12px;
+}
+#tabbar .tab.sel { background: var(--brass); border-color: var(--brass); color: #15120a; font-weight: 600; }
+/* Start tab = the toolbar; section tabs = one <details> at a time */
+body.tabbed #sidebar[data-tab="start"] #panel { display: none; }
+body.tabbed #sidebar[data-tab="section"] #toolbar { display: none; }
+body.tabbed #toolbar { flex: 1; overflow-y: auto; border-bottom: 0; }
+body.tabbed #panel > .section { display: none; border-bottom: 0; }
+body.tabbed #panel > .section.tabon { display: block; }
+body.tabbed #panel > .section.tabon > summary { display: none; }
+body.tabbed #panel { padding-bottom: env(safe-area-inset-bottom); }
+body.tabbed #sidebar footer { display: none; }
+body.tabbed #status { left: 10px; right: auto; top: 10px; bottom: auto; max-width: calc(100% - 20px); }
+body.tabbed #credit { position: fixed; left: 10px; right: auto; top: calc(50dvh - 24px); bottom: auto; padding: 0; text-align: left; }
+body.tabbed #apply { top: auto; bottom: calc(50dvh + 12px); right: 12px; }
+@media (max-height: 500px) and (orientation: landscape) {
+  body.tabbed #view { inset: 0 300px 0 0; width: auto; height: 100dvh; }
+  body.tabbed #sidebar { top: 0; left: auto; width: 300px; border-top: 0; border-left: 1px solid var(--line); }
+  body.tabbed #credit { top: auto; bottom: 10px; left: 10px; }
+  body.tabbed #apply { bottom: 12px; right: 312px; }
+}
+

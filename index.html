@@ -27,6 +27,7 @@
       <button id="shuffle" title="Randomise a few settings (space)">Shuffle</button>
       <button id="fit" class="ghost">Reset view</button>
     </div>
+    <label class="confirm"><input type="checkbox" id="confirm" checked> Confirm changes before applying</label>
     <div class="buttons">
       <button id="png" class="ghost" title="Save a PNG (p)">PNG</button>
       <button id="svg" class="ghost" title="Projected vector paths, grouped by colour">SVG</button>
@@ -45,11 +46,14 @@
   <div id="panel"></div>
 
   <footer>
-    <p>Drag to orbit · shift-drag to pan · scroll to zoom</p>
+    <p class="mouse-only">Drag to orbit · shift-drag to pan · scroll to zoom</p>
+    <p class="touch-only">Drag to orbit · two fingers to pan · pinch to zoom</p>
   </footer>
 </aside>
 
 <button id="show" class="ghost" title="Show the panel (h)">Panel</button>
+
+<button id="apply" hidden title="Retrace with the changed settings (Enter)">&#9166; Apply changes</button>
 
 <div id="status">Starting up</div>
 
