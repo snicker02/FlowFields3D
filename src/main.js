@@ -579,25 +579,27 @@ function buildToolbar() {
   el('video').addEventListener('click', saveVideo);
 
   el('image').addEventListener('click', () => el('imagefile').click());
-  el('imagefile').addEventListener('change', async (e) => {
+  el('imagefile').addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
-    if (!file) return;
-    try {
-      setStatus(`Reading ${file.name}...`);
-      const loaded = await readImageFile(file);
-      app.image = new ImageSource(loaded.data, loaded.name);
-      app.renderer.setTexture(toPowerOfTwoCanvas(loaded.element));
-      app.state.field.image.enabled = true;
-      app.panel.refresh();
-      pushHistory();
-      schedule('trace');
-      setStatus(`Loaded ${loaded.name} (${loaded.data.width} x ${loaded.data.height} sampled)`
-        + ' — set Seed bias, or pick "Image luminance" for colour, "By image" for width, "Loaded image" for texture.');
-    } catch (err) {
-      setStatus(`That image could not be loaded: ${err.message}`);
-    }
+    if (file) loadImageFile(file);
   });
+
+  // shared image shelf (snicker02.github.io/shared/bridge.js)
+  if (window.SnickerShelf) {
+    window.SnickerShelf.mount({
+      app: 'FlowFields3D',
+      button: el('shelfBtn'),
+      onImage: (file) => loadImageFile(file),
+      getImage: () => {
+        if (app.exporting) throw new Error('busy exporting');
+        return new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error('encode failed'))), 'image/png'));
+      },
+      getMeta: () => ({ name: `flowfield3d-${stamp()}.png` }),
+    });
+  } else {
+    el('shelfBtn').hidden = true;
+  }
   el('save').addEventListener('click', () => {
     app.state.color.gradient = app.gradient.toJSON();
     downloadBlob(new Blob([stateToJSON(app.state)], { type: 'application/json' }), `flowfield-${stamp()}.json`);
@@ -784,6 +786,24 @@ async function saveVideo() {
  * slice of the *same* frustum, composited into a 2D canvas as it goes. The
  * camera never moves, so the tiles line up exactly.
  */
+// Load an image to drive density, colour or texture (Image button, drop, or the shelf).
+async function loadImageFile(file) {
+    try {
+      setStatus(`Reading ${file.name}...`);
+      const loaded = await readImageFile(file);
+      app.image = new ImageSource(loaded.data, loaded.name);
+      app.renderer.setTexture(toPowerOfTwoCanvas(loaded.element));
+      app.state.field.image.enabled = true;
+      app.panel.refresh();
+      pushHistory();
+      schedule('trace');
+      setStatus(`Loaded ${loaded.name} (${loaded.data.width} x ${loaded.data.height} sampled)`
+        + ' — set Seed bias, or pick "Image luminance" for colour, "By image" for width, "Loaded image" for texture.');
+    } catch (err) {
+      setStatus(`That image could not be loaded: ${err.message}`);
+    }
+}
+
 async function savePNG() {
   if (app.exporting) return;
   const s = app.state;

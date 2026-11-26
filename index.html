@@ -35,6 +35,7 @@
       <button id="video" class="ghost" title="Record a looping turntable video">Video</button>
       <button id="image" class="ghost" title="Load an image to drive density, colour or texture">Image</button>
       <input id="imagefile" type="file" accept="image/*" hidden>
+      <button id="shelfBtn" class="ghost" title="Shared image shelf: send this view to another snicker02 app, or load an image to drive the field">⇄ Shelf</button>
       <button id="save" class="ghost">Save</button>
       <label class="ghost filebutton" title="Load a saved settings file">Load
         <input id="load" type="file" accept="application/json,.json">
@@ -59,6 +60,7 @@
 
 <div id="credit">Created with help from Claude AI</div>
 
+<script src="https://snicker02.github.io/shared/bridge.js"></script>
 <script type="module" src="src/main.js"></script>
 </body>
 </html>
