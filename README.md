@@ -548,6 +548,10 @@ vertices carry position, normal, colour and parameters. Around 3 million
 vertices is where an ordinary GPU starts to complain — the status bar reports
 the count.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ---
 
 Created with help from Claude AI.
