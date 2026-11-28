@@ -548,6 +548,10 @@ vertices carry position, normal, colour and parameters. Around 3 million
 vertices is where an ordinary GPU starts to complain — the status bar reports
 the count.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ---
 
 Created with help from Claude AI.
@@ -561,7 +565,3 @@ The **⇄ Shelf** button opens the image shelf shared by all apps on [snicker02.
 - **Load here** brings a shelf image into this app to drive density, colour or texture, the same as the Image button. Opening the app with `?shelf=<id>` does the same on start, which is how Send to works.
 
 The shelf code lives in [`snicker02.github.io/shared/bridge.js`](https://github.com/snicker02/snicker02.github.io/blob/main/shared/bridge.js). If it can't load (for example when you're offline), the app works as before and the button is hidden.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
